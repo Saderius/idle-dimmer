@@ -1,0 +1,32 @@
+# How git should treat line endings in this repository.
+#
+# The problem this solves: by default git asks your *machine's* config
+# (core.autocrlf) whether to rewrite line endings. That setting is personal and
+# is not shared, so two people can clone the same repo and get different bytes.
+#
+# The rules below pin the behaviour into the repo itself:
+#   1. Every text file is stored as LF (canonical) - no whole-file diff noise.
+#   2. Files that Windows tooling runs are checked out as CRLF, because cmd.exe
+#      and the PowerShell 5.1 host expect CRLF.
+# This is a Windows-only project (native tray app, .cmd/.ps1 launchers), so
+# CRLF on checkout is correct for every file type here.
+
+* text=auto
+
+# Launchers and scripts executed by Windows.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Sources built on Windows.
+*.cpp text eol=crlf
+*.h   text eol=crlf
+*.svg text eol=crlf
+
+# Documentation is read everywhere; LF keeps it portable.
+*.md  text eol=lf
+
+# Generated binaries - never rewrite these, they are not text.
+*.ico binary
+*.png binary
+*.exe binary

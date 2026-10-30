@@ -1,0 +1,59 @@
+name: Bug report
+description: Something dims, restores, or behaves incorrectly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not paste `activity.log` wholesale — it is a record of dim/restore
+        events only, but trim it to the lines around the problem.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What the app did, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Set the idle slider to 1 minute
+        2. Leave the machine alone
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version and build
+      description: Run `winver`, or paste the output of `[System.Environment]::OSVersion.Version`.
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Device
+      description: Laptop model or desktop panel. Brightness control is device-specific, so this matters more than usual.
+    validations:
+      required: true
+  - type: dropdown
+    id: display
+    attributes:
+      label: Does brightness actually change on this device?
+      description: Some external monitors have no WMI brightness control.
+      options:
+        - "Yes, dimming works"
+        - "No, nothing happens"
+        - "Not sure"
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: |
+        Run `IdleDimmer.exe --diagnose` and `IdleDimmer.exe --status`, then paste the
+        contents of `diagnostics.txt`.
+      render: text

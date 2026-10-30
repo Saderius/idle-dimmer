@@ -1,0 +1,83 @@
+# ---------------------------------------------------------------------------
+# Build toolchain (bundled Zig + compiler caches) — re-downloadable, ~25k files
+# ---------------------------------------------------------------------------
+/build-tools/
+
+# ---------------------------------------------------------------------------
+# Compiled output — rebuild with: build.ps1
+# ---------------------------------------------------------------------------
+*.exe
+*.dll
+*.lib
+*.a
+*.o
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.res
+*.map
+
+# ---------------------------------------------------------------------------
+# Generated icons — rebuild from the SVG sources with: icons\build-icons.ps1
+# ---------------------------------------------------------------------------
+*.ico
+# Panel icon alpha masks are generated from icons\panel\*.png by
+# tools\build-panel-icons.ps1 on every build.
+/PanelIconsData.h
+/icons/panel/*.png
+/icons/verify.png
+/icons/verify-tray.png
+/icons/verify-panel.png
+
+# ---------------------------------------------------------------------------
+# Runtime state written next to the app, including copies in subdirectories.
+# Ignore rules do not remove these files from manually created release archives.
+# ---------------------------------------------------------------------------
+settings.ini
+settings.ini.tmp
+settings.ini.cpubak
+diagnostics.txt
+brightness-recovery.bin
+stats.bin
+*.log
+*.dmp
+
+# ---------------------------------------------------------------------------
+# Local secrets and signing material (safe templates can still be committed)
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+!.env.template
+*.pem
+*.key
+*.pfx
+*.p12
+*.kdbx
+/secrets/
+/credentials/
+
+# ---------------------------------------------------------------------------
+# Editor / OS noise
+# ---------------------------------------------------------------------------
+.vs/
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ---------------------------------------------------------------------------
+# Agent working notes (not source)
+# ---------------------------------------------------------------------------
+/docs/superpowers/
+/.codex/
+
+# Local probes and scratch files, also excluded in this checkout's info/exclude.
+# Keep these rules shared so they survive a fresh clone or folder copy.
+/ScreenOffProbe.cpp
+/tools/check-lock-on-display-off.ps1
+/opencode-color-palettes.html

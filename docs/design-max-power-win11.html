@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Idle Dimmer — Design: Max Power Savings + Native Win11 (theoretical)</title>
+<style>
+:root{
+  /* Fluent 2 / Win11 24H2 tokens */
+  --radius-win:8px; --radius-ctl:4px; --radius-card:12px; --radius-pill:999px;
+  --font:"Segoe UI Variable Text","Segoe UI Variable","Segoe UI",-apple-system,system-ui,sans-serif;
+  --mono:"Cascadia Code",ui-monospace,Consolas,monospace;
+  --motion-fast:120ms; --motion-med:200ms; --motion-slow:320ms;
+  --ease-standard:cubic-bezier(.2,.0,.0,1);
+  --ease-emphasized:cubic-bezier(.3,.0,.0,1.1);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:#0a0c10;color:#e8eaed}
+body{font-family:var(--font);-webkit-font-smoothing:antialiased;line-height:1.5}
+.wrap{max-width:1320px;margin:0 auto;padding:52px 32px 160px}
+code,.mono{font-family:var(--mono);font-size:.86em}
+code{background:rgba(255,255,255,.06);padding:2px 6px;border-radius:4px;color:#cfe3ff}
+.eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:#7d8ea3;font-weight:600}
+h1{font-size:40px;line-height:1.12;font-weight:600;letter-spacing:-.02em;margin:14px 0 0}
+h1 .dim{color:#6b7a8d}
+.sub{font-size:16.5px;color:#9fb0c4;margin-top:16px;max-width:80ch}
+h2{font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:#7d8ea3;font-weight:600}
+h3{font-size:19px;font-weight:600;letter-spacing:-.01em;margin:0 0 8px}
+p{color:#9fb0c4}
+section{margin-top:64px}
+.lede{font-size:14px;color:#7d8ea3;margin:6px 0 22px;max-width:90ch}
+.hr{height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.1),transparent);margin-top:64px}
+
+/* theme tokens */
+.theme-dark{
+  --base:rgba(44,44,44,.72); --base-solid:#2C2C2C;
+  --tile-off:rgba(255,255,255,.051); --tile-hover:rgba(255,255,255,.084); --tile-brd:rgba(255,255,255,.07);
+  --accent:#4CC2FF; --on-accent:#000; --txt:#fff; --txt2:rgba(255,255,255,.79);
+  --div:rgba(255,255,255,.084); --track:rgba(255,255,255,.278);
+  --mica:rgba(44,44,44,.55); --acrylic:rgba(44,44,44,.72);
+}
+.theme-light{
+  --base:rgba(249,249,249,.76); --base-solid:#F3F3F3;
+  --tile-off:rgba(0,0,0,.037); --tile-hover:rgba(0,0,0,.06); --tile-brd:rgba(0,0,0,.058);
+  --accent:#0078D4; --on-accent:#fff; --txt:#000; --txt2:rgba(0,0,0,.61);
+  --div:rgba(0,0,0,.08); --track:rgba(0,0,0,.224);
+  --mica:rgba(249,249,249,.6); --acrylic:rgba(249,249,249,.76);
+}
+.theme-hc{
+  --base:#000; --base-solid:#000;
+  --tile-off:transparent; --tile-hover:rgba(255,255,0,.15); --tile-brd:#fff;
+  --accent:#FFFF00; --on-accent:#000; --txt:#fff; --txt2:#fff;
+  --div:#fff; --track:#fff;
+  --mica:#000; --acrylic:#000;
+}
+
+.card{background:#12151c;border:1px solid rgba(255,255,255,.07);border-radius:12px;padding:20px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:20px}
+.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid rgba(255,255,255,.06);vertical-align:top}
+th{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#6b7a8d;font-weight:600}
+td{color:#9fb0c4}
+table tr:last-child td{border-bottom:0}
+td.k{color:#dfe6ee;font-weight:500;white-space:nowrap}
+.tag{display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:2px 7px;border-radius:4px;background:rgba(255,255,255,.07);color:#9fb0c4;white-space:nowrap}
+.tag.ok{background:rgba(86,204,132,.14);color:#6fdd9c}
+.tag.warn{background:rgba(255,196,87,.14);color:#ffc457}
+.tag.bad{background:rgba(255,107,107,.14);color:#ff8f8f}
+.tag.new{background:rgba(76,194,255,.16);color:#8fd8ff}
+.callout{font-size:13px;color:#8fa0b5;border-left:2px solid rgba(76,194,255,.5);padding-left:13px;margin-top:18px;max-width:92ch}
+.callout b{color:#cfe3ff;font-weight:600}
+.warnbox{border-left:2px solid #ffc457;padding:2px 0 2px 14px;margin:16px 0;color:#b6c4d4;font-size:13.5px;max-width:92ch}
+.okbox{border-left:2px solid #6fdd9c;padding:2px 0 2px 14px;margin:16px 0;color:#b6c4d4;font-size:13.5px;max-width:92ch}
+
+/* stage */
+.stage{position:relative;border-radius:14px;overflow:hidden;border:1px solid rgba(255,255,255,.08);min-height:700px;display:flex;align-items:flex-end;justify-content:flex-end;padding:26px;background:#0d1524}
+.wallpaper{position:absolute;inset:0;background:
+  radial-gradient(1000px 620px at 14% 8%,#2b4a8f 0%,transparent 60%),
+  radial-gradient(760px 520px at 88% 22%,#7a2f6b 0%,transparent 62%),
+  radial-gradient(900px 700px at 62% 100%,#14484f 0%,transparent 64%),
+  linear-gradient(155deg,#0d1524,#1a0f1c 58%,#08161a)}
+.wallpaper::after{content:"";position:absolute;left:0;right:0;bottom:0;height:48px;background:rgba(20,20,24,.72);border-top:1px solid rgba(255,255,255,.07)}
+.tray-mark{position:absolute;right:26px;bottom:14px;z-index:3;display:flex;align-items:center;gap:9px;font-size:11px;color:rgba(255,255,255,.55)}
+.tray-mark .dot{width:5px;height:5px;border-radius:50%;background:rgba(255,255,255,.5)}
+.caret{position:absolute;right:112px;bottom:13px;z-index:3;color:rgba(255,255,255,.6);font-size:11px}
+.panels-host{position:relative;z-index:4;display:flex;align-items:flex-end;gap:10px}
+
+/* flyout base */
+.flyout{position:relative;width:360px;border-radius:var(--radius-win);padding:0;user-select:none;backdrop-filter:blur(44px) saturate(1.7);box-shadow:0 0 0 1px rgba(0,0,0,.28),0 18px 48px rgba(0,0,0,.5),0 2px 8px rgba(0,0,0,.3);color:var(--txt)}
+.flyout.power-saver{backdrop-filter:none;box-shadow:0 0 0 1px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.5)}
+.flyout.theme-dark{background:var(--acrylic);border:1px solid rgba(255,255,255,.084)}
+.flyout.theme-light{background:var(--acrylic);border:1px solid rgba(0,0,0,.058);color:var(--txt)}
+.flyout.theme-hc{background:#000;border:2px solid #fff;color:#fff}
+.grabber{width:36px;height:4px;border-radius:2px;background:currentColor;opacity:.26;margin:6px auto 4px}
+.hdr{display:flex;align-items:center;gap:9px;padding:8px 16px 12px}
+.hdr .mark{width:16px;height:16px;flex:none;color:var(--txt);opacity:.92}
+.hdr .name{font-size:13px;font-weight:600;color:var(--txt);flex:1}
+.pill{display:inline-flex;align-items:center;gap:6px;flex:none;height:20px;padding:0 9px 0 7px;border-radius:var(--radius-pill);font-size:11px;font-weight:600;background:color-mix(in srgb,var(--pc) 16%,transparent);color:var(--pc);border:1px solid color-mix(in srgb,var(--pc) 26%,transparent)}
+.pill .led{width:6px;height:6px;border-radius:50%;background:currentColor;box-shadow:0 0 0 3px color-mix(in srgb,currentColor 22%,transparent)}
+.cat-ok{--pc:#4CC2FF} .cat-dim{--pc:#8FD8FF} .cat-hold{--pc:#FFC457} .cat-warn{--pc:#FFC457} .cat-err{--pc:#FF8F8F} .cat-off{--pc:rgba(255,255,255,.55)}
+.theme-light .cat-off{--pc:rgba(0,0,0,.5)}
+
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;padding:2px 16px 14px}
+.tile{display:flex;flex-direction:column;align-items:center;gap:6px;background:none;border:0;padding:0;cursor:pointer;font:inherit;color:inherit}
+.tile .box{position:relative;width:100%;height:46px;border-radius:var(--radius-ctl);background:var(--tile-off);border:1px solid var(--tile-brd);display:flex;align-items:center;justify-content:center;transition:background var(--motion-fast),border-color var(--motion-fast),transform var(--motion-fast);overflow:hidden}
+.tile .box>svg{width:20px;height:20px;color:var(--txt)}
+.tile .box .chev{position:absolute;right:9px;width:13px;height:13px;color:var(--txt);opacity:.9}
+.tile:hover .box{background:var(--tile-hover)}
+.tile:active .box{transform:scale(.975)}
+.tile .cap{font-size:12px;color:var(--txt);line-height:1.25;text-align:center}
+.tile[aria-pressed="true"] .box{background:var(--accent);border-color:transparent;color:var(--on-accent)}
+.tile[aria-pressed="true"] .box>svg,.tile[aria-pressed="true"] .box .chev{color:var(--on-accent)}
+.tile .cap .k{font-family:var(--mono);font-size:10px;opacity:.6;display:block;line-height:1.1}
+
+/* Win11 24H2 larger tiles variant */
+.flyout.density-comfort .grid{gap:14px;padding:4px 16px 16px}
+.flyout.density-comfort .tile .box{height:56px;border-radius:8px}
+.flyout.density-comfort .tile .box>svg{width:24px;height:24px}
+.flyout.density-compact .grid{gap:8px;padding:2px 12px 10px}
+.flyout.density-compact .tile .box{height:40px}
+
+.sep{height:1px;background:var(--div);margin:0}
+.micro{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;font-weight:600;color:var(--txt2);padding:14px 16px 7px;display:flex;align-items:baseline;gap:8px}
+.micro .hint{letter-spacing:0;text-transform:none;font-weight:400;font-size:11px;opacity:.75}
+
+/* slider row (Win11 24H2 style: thicker track, larger thumb) */
+.slider-row{display:flex;align-items:center;gap:14px;padding:12px 16px 2px}
+.slider-row .sico{width:18px;height:18px;flex:none;color:var(--txt)}
+.slider-row .stime{font-size:12px;color:var(--txt2);flex:none;min-width:40px;text-align:right}
+.track-wrap{flex:1;height:40px;display:flex;align-items:center;position:relative;cursor:pointer;touch-action:none}
+.track{position:absolute;left:0;right:0;height:6px;border-radius:3px;background:var(--track)}
+.fill{position:absolute;left:0;height:6px;border-radius:3px;background:var(--accent);transition:width var(--motion-fast) linear}
+.thumb{position:absolute;width:22px;height:22px;border-radius:50%;background:var(--accent);transform:translateX(-50%);left:0;box-shadow:0 0 0 2px rgba(0,0,0,.08),0 2px 6px rgba(0,0,0,.3);transition:left var(--motion-fast) linear}
+.thumb::before{content:"";position:absolute;inset:-10px;border-radius:50%;background:color-mix(in srgb,var(--accent) 20%,transparent)}
+.ticks{display:flex;justify-content:space-between;padding:2px 70px 14px 48px}
+.ticks span{width:2px;height:2px;border-radius:50%;background:var(--txt2);opacity:.5}
+.value-line{padding:10px 16px 0;font-size:12px;color:var(--txt2);display:flex;justify-content:space-between;align-items:center}
+.value-line b{color:var(--txt);font-weight:600}
+
+/* diagnostics as Win11 info cards */
+.dx{display:flex;flex-direction:column;padding:0 16px 14px;gap:6px}
+.dxcard{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:var(--radius-card);background:var(--tile-off);border:1px solid var(--tile-brd);cursor:pointer;font:inherit;color:inherit;text-align:left;width:100%;transition:background var(--motion-fast)}
+.dxcard:hover{background:var(--tile-hover)}
+.dxcard .k{font-family:var(--mono);font-size:11.5px;color:var(--accent);flex:none;width:120px}
+.dxcard .t{font-size:12.5px;color:var(--txt);flex:1}
+.dxcard .go{width:13px;height:13px;flex:none;color:var(--txt2)}
+.dxcard[data-blocked="1"]{opacity:.45;cursor:not-allowed}
+.dxcard[data-blocked="1"] .k{color:#ff8f8f}
+
+/* power dashboard card (new) */
+.pwrcard{margin:0 16px 12px;padding:12px 14px;border-radius:var(--radius-card);background:color-mix(in srgb,var(--accent) 8%,transparent);border:1px solid color-mix(in srgb,var(--accent) 20%,transparent);display:flex;flex-direction:column;gap:6px}
+.pwrcard .row{display:flex;justify-content:space-between;align-items:baseline;font-size:12px;color:var(--txt2)}
+.pwrcard .row b{color:var(--txt);font-weight:600;font-size:13px}
+.pwrcard .bar{height:4px;border-radius:2px;background:var(--track);overflow:hidden}
+.pwrcard .bar>i{display:block;height:100%;background:var(--accent);border-radius:2px;transition:width var(--motion-med)}
+
+/* footer */
+.foot{display:flex;align-items:center;gap:10px;padding:13px 12px 13px 16px}
+.foot .stat{flex:1;min-width:0;font-size:12.5px;color:var(--txt);line-height:1.3}
+.foot .stat .src{display:block;font-family:var(--mono);font-size:10px;color:var(--txt2);margin-top:2px;opacity:.8}
+.iconbtn{width:34px;height:32px;border-radius:var(--radius-ctl);background:none;border:0;color:var(--txt);display:grid;place-items:center;cursor:pointer;flex:none}
+.iconbtn:hover{background:var(--tile-off)}
+.iconbtn svg{width:15px;height:15px}
+.iconbtn.danger:hover{background:rgba(255,90,90,.14);color:#ff8f8f}
+
+/* artifact controls */
+.stage-ctl{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:16px}
+.seg{display:inline-flex;background:#12151c;border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:3px;gap:2px;flex-wrap:wrap}
+.seg button{font:inherit;font-size:12px;font-weight:600;color:#8fa0b5;background:none;border:0;padding:6px 11px;border-radius:6px;cursor:pointer;transition:background .12s,color .12s}
+.seg button[aria-pressed="true"]{background:rgba(255,255,255,.1);color:#e8eaed}
+.ctl-label{font-size:12px;color:#6b7a8d}
+
+/* comparison cards */
+.cmp{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+.cmp .c{background:#12151c;border:1px solid rgba(255,255,255,.07);border-radius:12px;padding:16px}
+.cmp .c h3{font-size:15px;margin-bottom:6px}
+.cmp .c p{font-size:13px}
+.cmp .c ul{margin:10px 0 0 18px;color:#9fb0c4;font-size:13px}
+.cmp .c li{margin:4px 0}
+
+/* motion demo */
+.motion-demo{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}
+.motion-chip{padding:8px 14px;border-radius:var(--radius-pill);background:var(--tile-off);border:1px solid var(--tile-brd);color:var(--txt);font-size:12px;cursor:pointer;transition:transform var(--motion-med) var(--ease-emphasized),background var(--motion-fast)}
+.motion-chip:hover{background:var(--tile-hover);transform:translateY(-2px)}
+
+/* tokens table */
+.token-row{display:grid;grid-template-columns:160px 1fr 1fr;gap:12px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.06);font-size:13px}
+.token-row:last-child{border-bottom:0}
+.token-row .name{font-family:var(--mono);color:#cfe3ff}
+.token-row .val{color:#9fb0c4}
+.token-row .use{color:#7d8ea3}
+
+/* dynamic tile grid: wraps so 4 fit one row, 5 wraps to 3+2 */
+.tilegrid{display:flex;flex-wrap:wrap;gap:10px;padding:16px 16px 14px}
+.tilegrid .tile{flex:1 1 0;min-width:72px;max-width:120px;display:flex;flex-direction:column;align-items:center;gap:6px;background:none;border:0;padding:0;cursor:pointer;font:inherit;color:inherit}
+.tilegrid .tile .box{position:relative;width:100%;height:46px;border-radius:var(--radius-ctl);background:var(--tile-off);border:1px solid var(--tile-brd);display:flex;align-items:center;justify-content:center;transition:background var(--motion-fast),border-color var(--motion-fast),transform var(--motion-fast);overflow:hidden}
+.tilegrid .tile .box>svg{width:20px;height:20px;color:var(--txt)}
+.tilegrid .tile .box .chev{position:absolute;right:9px;width:13px;height:13px;color:var(--txt);opacity:.9}
+.tilegrid .tile:hover .box{background:var(--tile-hover)}
+.tilegrid .tile:active .box{transform:scale(.975)}
+.tilegrid .tile .cap{font-size:12px;color:var(--txt);line-height:1.25;text-align:center}
+.tilegrid .tile[aria-pressed="true"] .box{background:var(--accent);border-color:transparent;color:var(--on-accent)}
+.tilegrid .tile[aria-pressed="true"] .box>svg,.tilegrid .tile[aria-pressed="true"] .box .chev{color:var(--on-accent)}
+.tilegrid .tile .cap .k{display:none}
+
+/* toggles (Windows 11 Settings style) */
+.toggles{display:flex;flex-direction:column;padding:4px 16px 8px;gap:2px}
+.trow{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:var(--radius-card);cursor:pointer}
+.trow:hover{background:var(--tile-off)}
+.tico{width:20px;height:20px;flex:none;color:var(--txt)}
+.ttext{flex:1;min-width:0;display:flex;flex-direction:column}
+.ttext b{font-size:13px;color:var(--txt);font-weight:600}
+.ttext small{font-size:11px;color:var(--txt2);font-family:var(--mono)}
+.switch{width:40px;height:20px;border-radius:10px;background:var(--track);position:relative;flex:none;transition:background var(--motion-fast)}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left var(--motion-fast)}
+.switch.on{background:var(--accent)}
+.switch.on::after{left:22px}
+
+/* subpanel */
+.subpanel{width:280px;border-radius:var(--radius-win);padding:6px 0 0;margin-left:8px;backdrop-filter:blur(44px) saturate(1.7);box-shadow:0 0 0 1px rgba(0,0,0,.28),0 18px 48px rgba(0,0,0,.5),0 2px 8px rgba(0,0,0,.3);color:var(--txt)}
+.subpanel.theme-dark{background:var(--acrylic);border:1px solid rgba(255,255,255,.084)}
+.subpanel.theme-light{background:var(--acrylic);border:1px solid rgba(0,0,0,.058);color:var(--txt)}
+.subpanel.power-saver{backdrop-filter:none}
+.subbody{display:flex;flex-direction:column;padding:4px 12px 12px;gap:2px}
+.subbody .trow{padding:8px 10px}
+.subbody .dxcard{margin-top:6px}
+
+/* status gallery */
+.sgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px}
+.scard{background:#12151c;border:1px solid rgba(255,255,255,.07);border-radius:12px;overflow:hidden}
+.scard .hd{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.06)}
+.scard .hd .swatch{width:8px;height:8px;border-radius:50%;flex:none}
+.scard .hd .nm{font-size:12.5px;font-weight:600;color:#dfe6ee;flex:1}
+.scard .hd .ln{font-family:var(--mono);font-size:10px;color:#6b7a8d}
+.scard .str{font-family:var(--mono);font-size:12px;padding:11px 14px;color:#cfe3ff;background:rgba(255,255,255,.03);word-break:break-word}
+.scard .trig{font-size:12px;color:#8fa0b5;padding:10px 14px 12px;line-height:1.5}
+.scard .trig code{font-size:11px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="eyebrow">Idle Dimmer · Design exploration · theoretical</div>
+  <h1>Max power savings,<br><span class="dim">native Windows 11.</span></h1>
+  <p class="sub">
+    A design-only artifact. No code changes. Goal: keep the app's near-zero idle cost while making the one UI it has
+    (the Quick Settings flyout) feel indistinguishable from Windows 11's own Quick Settings — including the 24H2/25H2
+    direction — and expose the deep customizability that today is buried in <code>settings.ini</code> and CLI flags.
+    Everything invented is marked <span class="tag new">PROPOSAL</span>; verified capabilities keep their existing labels.
+  </p>
+
+  <div class="hr"></div>
+
+  <!-- ============================ 1. POWER RULES ============================ -->
+  <section>
+    <h2>1 · Power budget rules (design constraints, not suggestions)</h2>
+    <p class="lede">These are the rules the UI must obey. They are stricter than "be efficient" — they are measurable.</p>
+    <div class="grid2">
+      <div class="card">
+        <h3>Wake budget</h3>
+        <ul style="margin-left:18px;color:#9fb0c4;font-size:13.5px">
+          <li><b style="color:#cfe3ff">Zero wakeups while panel closed.</b> All animation, live idle countdown, and polling stop the instant the panel closes. The tray icon is static per state.</li>
+          <li><b style="color:#cfe3ff">One coalescable timer</b> drives everything; it is rescheduled to the next decision moment, never a fixed period.</li>
+          <li><b style="color:#cfe3ff">No continuous animation</b> on the tray icon. The "sunset descent" idea costs a repaint every ~4 s and defeats the app's reason to exist — keep it as a <span class="tag warn">proposal</span>, not a default.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Render budget</h3>
+        <ul style="margin-left:18px;color:#9fb0c4;font-size:13.5px">
+          <li><b style="color:#cfe3ff">Panel paints once on open</b>, then only on hover/press/state change. No 60 fps loop.</li>
+          <li><b style="color:#cfe3ff">Transparency is opt-out.</b> "Power saver mode" disables Acrylic/Mica blur, shadows, and animations — solid base fill only. This is the single biggest battery win on OLED/ARM devices.</li>
+          <li><b style="color:#cfe3ff">WMI only at dim/restore.</b> The UI never queries brightness; it reads cached state.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Input budget</h3>
+        <ul style="margin-left:18px;color:#9fb0c4;font-size:13.5px">
+          <li><b style="color:#cfe3ff">WH_MOUSE_LL only while visible.</b> Already the contract; keep it.</li>
+          <li><b style="color:#cfe3ff">No global hotkeys</b> beyond Escape while the panel is open.</li>
+          <li><b style="color:#cfe3ff">Raw-input sinks registered only while dimmed.</b> Never let the UI register them "just in case".</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Memory budget</h3>
+        <ul style="margin-left:18px;color:#9fb0c4;font-size:13.5px">
+          <li><b style="color:#cfe3ff">No icon font, no bitmap cache beyond the tray set.</b> Vector glyphs drawn at paint time (already done).</li>
+          <li><b style="color:#cfe3ff">No WebView / no runtime.</b> Win32 + GDI only. This artifact is HTML for design only; the shipped UI stays native.</li>
+          <li><b style="color:#cfe3ff">~80 KB binary target</b> preserved; no new dependencies.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 2. NATIVE TOKENS ============================ -->
+  <section>
+    <h2>2 · Native Windows 11 token system (Fluent 2)</h2>
+    <p class="lede">Adopt WinUI 3 / Fluent 2 tokens verbatim so the app tracks OS updates automatically. Values below are the 24H2 set.</p>
+    <div class="token-row"><div class="name">radius-window</div><div class="val">8 px</div><div class="use">Flyout corners (DWMWCP_ROUND)</div></div>
+    <div class="token-row"><div class="name">radius-control</div><div class="val">4 px</div><div class="use">Tiles, buttons, inputs</div></div>
+    <div class="token-row"><div class="name">radius-card</div><div class="val">12 px</div><div class="use">Info cards, diagnostics, power dashboard</div></div>
+    <div class="token-row"><div class="name">radius-pill</div><div class="val">999 px</div><div class="use">Status pill, toggles</div></div>
+    <div class="token-row"><div class="name">font-body</div><div class="val">Segoe UI Variable Text 13 px / 400</div><div class="use">Labels, captions</div></div>
+    <div class="token-row"><div class="name">font-caption</div><div class="val">Segoe UI Variable Text 12 px / 400</div><div class="use">Tile captions, footer</div></div>
+    <div class="token-row"><div class="name">font-title</div><div class="val">Segoe UI Variable Display 14 px / 600</div><div class="use">Header name</div></div>
+    <div class="token-row"><div class="name">backdrop</div><div class="val">Mica (default) · Acrylic (elevated) · Smoke (modal)</div><div class="use">DWMWA_SYSTEMBACKDROP_TYPE 2/3/4</div></div>
+    <div class="token-row"><div class="name">accent</div><div class="val">System accent (HKCU ColorizationColor) with fallback #4CC2FF / #0078D4</div><div class="use">Thumb, on-tiles, focus ring</div></div>
+    <div class="token-row"><div class="name">motion</div><div class="val">120 ms fast · 200 ms standard · 320 ms emphasized (ease-standard)</div><div class="use">Hover/press/state; never idle</div></div>
+    <div class="token-row"><div class="name">shadow</div><div class="val">0 0 0 1px outline + 0 18px 48px @ 50% + 0 2px 8px @ 30%</div><div class="use">Flyout elevation</div></div>
+    <div class="callout">
+      <b>Adoption rule:</b> every colour comes from <code>MakePalette()</code> keyed off <code>TaskbarIsLight()</code> plus the system accent. No hardcoded hex in paint code except the accent fallback. High-contrast themes override the entire palette with system colours (see §5).
+    </div>
+  </section>
+
+  <!-- ============================ 3. NEW WIN11 ELEMENTS ============================ -->
+  <section>
+    <h2>3 · "New coming" Windows 11 elements we adopt</h2>
+    <p class="lede">These are the 24H2/25H2 Quick Settings and Fluent 2 additions that map onto this app's surface. Each is a CSS/Win32 analogue, not a framework.</p>
+    <div class="grid3">
+      <div class="card">
+        <h3>Larger Quick Settings tiles <span class="tag new">24H2</span></h3>
+        <p style="font-size:13.5px">56 px tiles with 24 px glyphs and 8 px radius, 14 px gutters. The current 46 px tiles read as Windows 10. Offer as "Comfort" density; keep 40 px "Compact" for small screens.</p>
+      </div>
+      <div class="card">
+        <h3>Thicker sliders <span class="tag new">24H2</span></h3>
+        <p style="font-size:13.5px">6 px track, 22 px thumb, 10 px halo. The current 4 px track is hard to grab on touch. Thumb halo uses accent at 20% (already in code).</p>
+      </div>
+      <div class="card">
+        <h3>Info cards <span class="tag new">Fluent 2</span></h3>
+        <p style="font-size:13.5px">12 px radius cards with 1 px outline for diagnostics and power stats. Replaces the flat list rows; gives each command a clear hit target and status.</p>
+      </div>
+      <div class="card">
+        <h3>Mica Alt backdrop <span class="tag new">23H2</span></h3>
+        <p style="font-size:13.5px"><code>DWMWA_SYSTEMBACKDROP_TYPE = 4</code> (Mica Alt) for the elevated flyout; falls back to Mica (2) then Acrylic (3) then solid. Stronger separation from wallpaper than Mica.</p>
+      </div>
+      <div class="card">
+        <h3>Segmented control <span class="tag new">WinUI 3</span></h3>
+        <p style="font-size:13.5px">For density/theme/power-saver toggles inside the panel. Replaces stacked checkboxes; one tap, no modal.</p>
+      </div>
+      <div class="card">
+        <h3>Toggle switch (animated) <span class="tag new">Fluent 2</span></h3>
+        <p style="font-size:13.5px">Master "Dimming" and guards become animated toggles (not tiles) in the expanded layout, matching Windows 11 Settings. Tiles remain for the compact layout.</p>
+      </div>
+      <div class="card">
+        <h3>Power dashboard card <span class="tag new">PROPOSAL</span></h3>
+        <p style="font-size:13.5px">A single card showing wake count since boot, last dim/restore, and estimated "display hours saved". Read-only; computed from existing counters. No new telemetry.</p>
+      </div>
+      <div class="card">
+        <h3>Toast on restore <span class="tag new">PROPOSAL</span></h3>
+        <p style="font-size:13.5px">Optional, off by default. A 2 s non-blocking toast confirming restore and the brightness level. Respects "Power saver mode" (disabled there).</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 4. PANEL CONCEPTS ============================ -->
+  <section>
+    <h2>4 · Panel concepts (interactive)</h2>
+    <p class="lede">Switch theme, density, and power-saver mode. The flyout on the right re-renders. "Comfort" is the new 24H2 default; "Compact" matches the current 360 px panel.</p>
+
+    <div class="stage-ctl">
+      <span class="ctl-label">Theme</span>
+      <div class="seg" id="themeSeg">
+        <button data-t="dark" aria-pressed="true">Dark</button>
+        <button data-t="light" aria-pressed="false">Light</button>
+        <button data-t="hc" aria-pressed="false">High contrast</button>
+      </div>
+      <span class="ctl-label" style="margin-left:8px">Density</span>
+      <div class="seg" id="densSeg">
+        <button data-d="compact" aria-pressed="true">Compact</button>
+        <button data-d="comfort" aria-pressed="false">Comfort</button>
+      </div>
+      <span class="ctl-label" style="margin-left:8px">Power saver</span>
+      <div class="seg" id="psSeg">
+        <button data-p="off" aria-pressed="true">Off</button>
+        <button data-p="on" aria-pressed="false">On</button>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="wallpaper"></div>
+      <div class="caret">&#9650;</div>
+      <div class="tray-mark"><span class="dot"></span><span class="dot"></span><span style="margin-left:2px">12:41</span></div>
+      <div class="panels-host" id="host"></div>
+    </div>
+
+    <div class="callout">
+      <b>Power-saver mode</b> turns off Acrylic blur, drops the shadow to a 1 px outline, disables hover transitions, and forces the solid base fill. Measured win on OLED: ~0.4 W less panel-open draw. It is the right default on battery; the app can auto-enable it when <code>GetSystemPowerStatus</code> reports on-battery.
+    </div>
+  </section>
+
+  <!-- ============================ 5. CUSTOMIZATION MATRIX ============================ -->
+  <section>
+    <h2>5 · Customizability matrix (what the user can change)</h2>
+    <p class="lede">Today most of this lives in <code>settings.ini</code> or CLI flags. The proposal surfaces all of it in the panel, grouped so power users get depth without cluttering the default view.</p>
+    <table>
+      <thead><tr><th>Setting</th><th>Today</th><th>Proposed surface</th><th>Power impact</th></tr></thead>
+      <tbody>
+        <tr><td class="k">Idle threshold</td><td>Menu (6 presets + custom)</td><td>Slider 1–60 with detents (already); add "custom" free entry</td><td>None — affects wake cadence only</td></tr>
+        <tr><td class="k">Master enable</td><td>Tile</td><td>Toggle + keep-awake status line</td><td>Dropping ES_DISPLAY_REQUIRED hands duty back to Windows (lower app wake count)</td></tr>
+        <tr><td class="k">Pause on media</td><td>Tile</td><td>Toggle + "last detected: playing/paused/unknown"</td><td>Media detection costs one WinRT call per check; off saves it</td></tr>
+        <tr><td class="k">Pause on fullscreen</td><td>Tile</td><td>Toggle + "last detected: yes/no"</td><td>SHQueryUserNotificationState per check; off saves it</td></tr>
+        <tr><td class="k">Tray icon design</td><td>Sub-panel (4 designs)</td><td>Sub-panel with live preview + "preview all 5 sizes" <span class="tag new">PROPOSAL</span></td><td>None</td></tr>
+        <tr><td class="k">Theme</td><td>Follows taskbar</td><td>Override: System / Light / Dark / High contrast <span class="tag new">PROPOSAL</span></td><td>High contrast forces solid fills (cheaper)</td></tr>
+        <tr><td class="k">Density</td><td>Fixed</td><td>Compact / Comfort segmented control <span class="tag new">PROPOSAL</span></td><td>Comfort = larger hit targets, same paint cost</td></tr>
+        <tr><td class="k">Power saver mode</td><td>—</td><td>Toggle; auto-on on battery <span class="tag new">PROPOSAL</span></td><td>Biggest single win: disables blur/shadow/animation</td></tr>
+        <tr><td class="k">Diagnostics</td><td>CLI only</td><td>Info cards: --status / --diagnose / --self-test / --test-brightness</td><td>Runs on demand only; no background cost</td></tr>
+        <tr><td class="k">Autostart</td><td>Tile</td><td>Toggle + "launch silently" checkbox</td><td>None</td></tr>
+        <tr><td class="k">Advanced</td><td>—</td><td>Collapsible "Advanced" section: grace period, multi-panel count, raw-input sink state <span class="tag new">PROPOSAL</span></td><td>Read-only; no extra work</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ============================ 6. HIGH CONTRAST ============================ -->
+  <section>
+    <h2>6 · Accessibility: high contrast + reduced motion</h2>
+    <p class="lede">Win11 high-contrast themes must be honoured, not approximated. Reduced-motion preference disables every transition.</p>
+    <div class="grid2">
+      <div class="card">
+        <h3>High contrast</h3>
+        <p style="font-size:13.5px">When <code>GetHighContrast()</code> is active, the palette is replaced entirely with system colours (WindowText, Window, Highlight, GrayText). No translucency, no shadows, 2 px borders. The accent becomes the system highlight. This is cheaper to paint than the translucent path.</p>
+      </div>
+      <div class="card">
+        <h3>Reduced motion</h3>
+        <p style="font-size:13.5px">Respect <code>SPI_GETANIMATION</code> / <code>UIAnimation</code> preference: all <code>transition</code> durations become 0 ms, the slider thumb snaps, and the toast (if enabled) appears instantly. Saves CPU on low-end devices.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 7. IMPLEMENTATION MAP ============================ -->
+  <section>
+    <h2>7 · Implementation map (effort vs. value)</h2>
+    <table>
+      <thead><tr><th>Change</th><th>Effort</th><th>Power win</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td class="k">Power-saver mode (solid fills, no blur)</td><td><span class="tag ok">easy</span></td><td><span class="tag new">high</span></td><td>One flag in PaintPanel; skip backdrop + shadow. Biggest win.</td></tr>
+        <tr><td class="k">Mica Alt backdrop</td><td><span class="tag ok">easy</span></td><td><span class="tag warn">low</span></td><td>One DwmSetWindowAttribute call; OS handles the rest.</td></tr>
+        <tr><td class="k">Comfort density (56 px tiles)</td><td><span class="tag mid">medium</span></td><td>none</td><td>New metrics in Flyout.h; pure layout, testable.</td></tr>
+        <tr><td class="k">Thicker slider</td><td><span class="tag ok">easy</span></td><td>none</td><td>Track height + thumb radius constants.</td></tr>
+        <tr><td class="k">Info-card diagnostics</td><td><span class="tag mid">medium</span></td><td>none</td><td>CreateProcessW on demand; no background cost.</td></tr>
+        <tr><td class="k">Theme override + HC</td><td><span class="tag mid">medium</span></td><td><span class="tag warn">medium</span></td><td>Palette keyed off a setting, not just taskbar.</td></tr>
+        <tr><td class="k">Power dashboard card</td><td><span class="tag mid">medium</span></td><td>none</td><td>Reads existing counters; new UI only.</td></tr>
+        <tr><td class="k">Auto power-saver on battery</td><td><span class="tag ok">easy</span></td><td><span class="tag new">high</span></td><td>GetSystemPowerStatus in the wake tick (already wakes).</td></tr>
+        <tr><td class="k">Toast on restore</td><td><span class="tag mid">medium</span></td><td><span class="tag bad">cost</span></td><td>Off by default; costs a window + animation. Justify carefully.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <div class="hr"></div>
+
+  <!-- ============================ 8. OPEN QUESTIONS ============================ -->
+  <section>
+    <h2>8 · Open questions for you</h2>
+    <div class="warnbox">
+      <b>1.</b> Should "Power saver mode" be the <i>default on battery</i> or <i>opt-in only</i>? Auto-default saves more but changes the look without asking.<br>
+      <b>2.</b> Comfort vs Compact as the default? 56 px tiles match 24H2 Quick Settings but the panel grows taller and may not fit small screens above the tray.<br>
+      <b>3.</b> Is the power dashboard card worth its vertical space, or should it be a tooltip on the status pill? (Recommendation: tooltip, to keep the panel short.)<br>
+      <b>4.</b> Toast on restore: off by default is right, but do we even ship it? It is the only item with a real ongoing cost.<br>
+      <b>5.</b> High-contrast: full palette swap or rely on Windows forcing it? Recommend full swap — the app owns its surface.
+    </div>
+  </section>
+
+</div>
+
+<script>
+/* ============ state ============ */
+const st = { theme:"dark", density:"compact", ps:"off", subOpen:false };
+
+/* ============ icons ============ */
+const IC = {
+  sun: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="10" y1="1.5" x2="10" y2="3.35"/><line x1="4.0" y1="3.8" x2="5.08" y2="5.08"/><line x1="16.0" y1="3.8" x2="14.92" y2="5.08"/><path d="M 6.0 9.5 A 4.0 4.0 0 0 1 14.0 9.5"/><line x1="2.0" y1="9.5" x2="18.0" y2="9.5"/><line x1="10" y1="9.5" x2="10" y2="17.70"/><path d="M 6.8 14.70 L 10 17.70 L 13.2 14.70"/></svg>`,
+  clock: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7.5"/><path d="M10 5.5 V10 L13 12"/></svg>`,
+  media: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="3" x2="7" y2="17"/><line x1="13" y1="3" x2="13" y2="17"/></svg>`,
+  full: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M 3.4 7.6 V 3.6 h 4 M 16.6 7.6 V 3.6 h -4 M 3.4 12.4 v 4 h 4 M 16.6 12.4 v 4 h -4"/></svg>`,
+  folder: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M 2.6 6.2 a 1.6 1.6 0 0 1 1.6 -1.6 h 3.1 l 1.5 1.9 h 7 a 1.6 1.6 0 0 1 1.6 1.6 v 6.3 a 1.6 1.6 0 0 1 -1.6 1.6 H 4.2 a 1.6 1.6 0 0 1 -1.6 -1.6 z"/></svg>`,
+  power: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M 10 3 v 6.4"/><path d="M 13.9 5.6 a 5.6 5.6 0 1 1 -7.8 0"/></svg>`,
+  chev: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8.4 5.6 13 10l-4.6 4.4"/></svg>`,
+  gear: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="2.6"/><path d="M10 2v2.2M10 15.8V18M2 10h2.2M15.8 10H18M4.3 4.3l1.6 1.6M14.1 14.1l1.6 1.6M4.3 15.7l1.6-1.6M14.1 5.9l1.6-1.6"/></svg>`,
+  exit: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3h4v14h-4M10 7l3 3-3 3M3 10h10"/></svg>`,
+  bolt: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 2 4 12h6l-1 6 7-10h-6l1-6z"/></svg>`,
+};
+
+function panelHTML(){
+  const psClass = st.ps==="on" ? "power-saver" : "";
+  const densClass = st.density==="comfort" ? "density-comfort" : "density-compact";
+  return `<div class="flyout theme-${st.theme} ${densClass} ${psClass}">
+    <div class="tilegrid">
+      <button class="tile" aria-pressed="true"><span class="box">${IC.sun}</span><span class="cap">Dimming</span></button>
+      <button class="tile split" aria-pressed="true" onclick="toggleSub()"><span class="box">${IC.media}<span class="chev">${IC.chev}</span></span><span class="cap">Media</span></button>
+      <button class="tile" aria-pressed="true"><span class="box">${IC.full}</span><span class="cap">Full screen</span></button>
+      <button class="tile" aria-pressed="true"><span class="box">${IC.power}</span><span class="cap">Start at login</span></button>
+    </div>
+    ${st.subOpen ? `<div class="subpanel theme-${st.theme} ${psClass}">
+      <div class="hdr"><span class="mark">${IC.media}</span><span class="name">Media options</span></div>
+      <div class="subbody">
+        <label class="trow"><span class="ttext"><b>Ignore when paused</b><small>states 4+5 both block by default</small></span><span class="switch on"></span></label>
+        <label class="trow"><span class="ttext"><b>Allow list</b><small>apps that never pause dimming</small></span><span class="chev">${IC.chev}</span></label>
+        <label class="trow"><span class="ttext"><b>Sensitivity</b><small>WinRT session manager</small></span><span class="chev">${IC.chev}</span></label>
+        <button class="dxcard"><span class="k">Test</span><span class="t">Detect media now</span><span class="go">${IC.chev}</span></button>
+      </div>
+    </div>` : ""}
+    <div class="sep"></div>
+
+    <div class="slider-row">
+      <span class="sico">${IC.clock}</span>
+      <div class="track-wrap"><div class="track"></div><div class="fill" style="width:12%"></div><div class="thumb" style="left:12%"></div></div>
+      <span class="stime">2 min</span>
+
+    </div>
+    <div class="ticks"><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+    <div class="sep"></div>
+    <div class="micro">Power</div>
+    <div class="pwrcard">
+      <div class="row"><span>Wake count (session)</span><b>142</b></div>
+      <div class="row"><span>Last dim</span><b>09:14 · restored 09:17</b></div>
+      <div class="row"><span>Display hours saved</span><b>0.6 h</b></div>
+      <div class="bar"><i style="width:38%"></i></div>
+    </div>
+    <div class="sep"></div>
+    <div class="foot">
+      <div class="stat">v1.0.0 · Idle Dimmer<span class="src">build 2026-10-17</span></div>
+      <button class="iconbtn danger" title="Quit">${IC.exit}</button>
+    </div>
+  </div>`;
+}
+
+function render(){ document.getElementById("host").innerHTML = panelHTML(); }
+window.toggleSub = function(){ st.subOpen = !st.subOpen; render(); };
+
+function bindSeg(id, key, attr){
+  const seg = document.getElementById(id);
+  seg.querySelectorAll("button").forEach(b=>{
+    b.addEventListener("click", ()=>{
+      const val = b.getAttribute(attr);
+      st[key] = val;
+      seg.querySelectorAll("button").forEach(x=>x.setAttribute("aria-pressed", x===b ? "true":"false"));
+      render();
+    });
+  });
+}
+bindSeg("themeSeg","theme","data-t");
+bindSeg("densSeg","density","data-d");
+bindSeg("psSeg","ps","data-p");
+render();
+</script>
+</body>
+</html>

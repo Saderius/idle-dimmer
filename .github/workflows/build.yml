@@ -1,0 +1,38 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # build.ps1 bootstraps the pinned Zig toolchain, rasterizes the panel icons,
+      # embeds the app icon, and fails on the icon-geometry and docs/code gates.
+      - name: Build
+        shell: pwsh
+        run: ./build.ps1
+
+      # The self-test writes its report to diagnostics.txt and exits non-zero on failure.
+      # Both are checked: an exit code alone would not catch a report that stopped
+      # containing the assertions it claims to have run. Start-Process is required because
+      # this is a GUI-subsystem binary, so a direct call would not populate $LASTEXITCODE.
+      - name: Self-test
+        shell: pwsh
+        run: |
+          $p = Start-Process ./IdleDimmer.exe -ArgumentList '--self-test' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "self-test exited $($p.ExitCode)" }
+          Get-Content diagnostics.txt
+          if (-not (Select-String -Path diagnostics.txt -Pattern 'PASS')) { throw 'self-test did not report PASS' }
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: IdleDimmer-windows-x64
+          path: IdleDimmer.exe
+          if-no-files-found: error
