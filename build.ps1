@@ -1,3 +1,9 @@
+# SkipIconRender exists for CI. Rasterizing the SVG artwork needs headless Edge, which is not a
+# build dependency this project wants: a fresh clone with no generated icons would otherwise
+# launch a browser ~30 times inside the build. The generated artifacts are committed, so CI
+# compiles the same bytes a contributor gets without invoking Edge at all.
+param([switch]$SkipIconRender)
+
 $ErrorActionPreference = 'Stop'
 $compiler = Join-Path $PSScriptRoot 'build-tools\zig-x86_64-windows-0.15.2\zig.exe'
 $env:ZIG_GLOBAL_CACHE_DIR = Join-Path $PSScriptRoot 'build-tools\native-cache'
@@ -44,8 +50,12 @@ $srcs = Get-ChildItem $PSScriptRoot -Filter '*.cpp' |
         Select-Object -ExpandProperty FullName
 # Panel glyphs are antialiased alpha masks, not integer GDI line art. This runs before the
 # compile because Flyout.cpp includes the generated header, and it caches on timestamps.
-& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'tools\build-panel-icons.ps1')
-if ($LASTEXITCODE -ne 0) { throw 'Panel icon generation failed' }
+if (-not $SkipIconRender) {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'tools\build-panel-icons.ps1')
+    if ($LASTEXITCODE -ne 0) { throw 'Panel icon generation failed' }
+} elseif (-not (Test-Path (Join-Path $PSScriptRoot 'PanelIconsData.h'))) {
+    throw 'PanelIconsData.h is missing and -SkipIconRender was given; run build.ps1 without the switch once.'
+}
 & $compiler cc -x c++ -target x86_64-windows-gnu -std=c++17 -Os -fno-exceptions -fno-rtti -ffunction-sections -fdata-sections '-Wl,--gc-sections' '-Wl,--subsystem,windows' -s -municode @srcs -o (Join-Path $PSScriptRoot 'IdleDimmer.exe') -lole32 -loleaut32 -lwbemuuid -lapi-ms-win-core-winrt-l1-1-0 -lapi-ms-win-core-winrt-string-l1-1-0 -lshell32 -luser32 -lgdi32 -ladvapi32 -lwtsapi32 -ldwmapi
 if ($LASTEXITCODE -ne 0) { throw 'Native build failed' }
 # Embed the tray icon as the executable's main application icon (RT_ICON + RT_GROUP_ICON).
@@ -59,7 +69,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Application icon embedding failed' }
 $iconDir = Join-Path $PSScriptRoot 'icons'
 $svg = Get-ChildItem $iconDir -Filter '*.svg' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 $ico = Get-ChildItem $iconDir -Filter '*.ico' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-if ($svg -and (-not $ico -or $svg.LastWriteTime -gt $ico.LastWriteTime)) {
+if (-not $SkipIconRender -and $svg -and (-not $ico -or $svg.LastWriteTime -gt $ico.LastWriteTime)) {
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $iconDir 'build-icons.ps1')
     if ($LASTEXITCODE -ne 0) { Write-Warning 'Icon generation failed; keeping existing .ico files' }
 }

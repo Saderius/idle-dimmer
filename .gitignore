@@ -19,13 +19,15 @@
 *.map
 
 # ---------------------------------------------------------------------------
-# Generated icons — rebuild from the SVG sources with: icons\build-icons.ps1
+# Generated icons are COMMITTED on purpose. Rasterizing them needs headless Edge, and making
+# that a build dependency hung CI for 15 minutes on the first run: a fresh clone has no
+# generated icons, so the build launched a browser ~30 times. Committing the artifacts means
+# `build.ps1` compiles identical bytes with no browser at all.
+#   Tray .ico   -> icons\build-icons.ps1
+#   Panel .png  -> tools\build-panel-icons.ps1
+#   PanelIconsData.h is the header generated from those .png files.
+# Only the verification contact sheets stay ignored; they are output, not input.
 # ---------------------------------------------------------------------------
-*.ico
-# Panel icon alpha masks are generated from icons\panel\*.png by
-# tools\build-panel-icons.ps1 on every build.
-/PanelIconsData.h
-/icons/panel/*.png
 /icons/verify.png
 /icons/verify-tray.png
 /icons/verify-panel.png

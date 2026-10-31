@@ -67,11 +67,19 @@ function Get-Screenshot([string]$svgPath, [int]$size) {
     if (Test-Path $out) { Remove-Item $out -Force }
     $profile = Join-Path $env:TEMP 'idleicons-edge-profile'
     # Edge logs to stderr; tolerate it (PS 5.1 would otherwise raise a terminating error).
+    # Bounded wait: an unbounded Edge call is what hung the first CI run for 15 minutes.
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = 'SilentlyContinue'
     try {
-        & $edge --headless --disable-gpu --hide-scrollbars --force-device-scale-factor=1 `
-            --user-data-dir="$profile" --screenshot="$out" --window-size=$size,$size ([Uri]$html).AbsoluteUri 2>$null | Out-Null
+        $proc = Start-Process -FilePath $edge -PassThru -WindowStyle Hidden -ArgumentList @(
+            '--headless', '--disable-gpu', '--hide-scrollbars', '--force-device-scale-factor=1',
+            "--user-data-dir=`"$profile`"", "--screenshot=`"$out`"", "--window-size=$size,$size",
+            ([Uri]$html).AbsoluteUri
+        )
+        if (-not $proc.WaitForExit(60000)) {
+            try { $proc.Kill() } catch { }
+            throw "Edge timed out after 60 s rasterizing $svgPath"
+        }
     } finally { $ErrorActionPreference = $prevEAP }
     if (-not (Test-Path $out)) { throw "Rasterization failed for $svgPath" }
     return $out

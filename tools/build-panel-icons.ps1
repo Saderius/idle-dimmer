@@ -51,8 +51,18 @@ function Get-Screenshot([string]$svgPath, [int]$size) {
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = 'SilentlyContinue'
     try {
-        & $edge --headless --disable-gpu --hide-scrollbars --force-device-scale-factor=1 `
-            --user-data-dir="$profile" --screenshot="$out" --window-size=$size,$size ([Uri]$html).AbsoluteUri 2>$null | Out-Null
+        # A hard timeout, because "Edge never returns" is a real failure mode: the first CI run
+        # sat in the build step for 15 minutes doing exactly this. Start-Process + WaitForExit is
+        # the only way to bound a native child reliably; the call operator cannot be cancelled.
+        $proc = Start-Process -FilePath $edge -PassThru -WindowStyle Hidden -ArgumentList @(
+            '--headless', '--disable-gpu', '--hide-scrollbars', '--force-device-scale-factor=1',
+            "--user-data-dir=`"$profile`"", "--screenshot=`"$out`"", "--window-size=$size,$size",
+            ([Uri]$html).AbsoluteUri
+        )
+        if (-not $proc.WaitForExit(60000)) {
+            try { $proc.Kill() } catch { }
+            throw "Edge timed out after 60 s rasterizing $svgPath"
+        }
     } finally {
         $ErrorActionPreference = $prevEAP
     }

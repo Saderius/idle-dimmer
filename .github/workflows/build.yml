@@ -12,11 +12,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # build.ps1 bootstraps the pinned Zig toolchain, rasterizes the panel icons,
-      # embeds the app icon, and fails on the icon-geometry and docs/code gates.
+      # build.ps1 bootstraps the pinned Zig toolchain, then compiles. -SkipIconRender uses the
+      # committed icon artifacts: rasterizing them needs headless Edge, which hung the first CI
+      # run for 15 minutes before being cancelled. Manual workflow_dispatch can still render
+      # icons by running build.ps1 without the switch.
       - name: Build
         shell: pwsh
-        run: ./build.ps1
+        run: ./build.ps1 -SkipIconRender
 
       # The self-test writes its report to diagnostics.txt and exits non-zero on failure.
       # Both are checked: an exit code alone would not catch a report that stopped
