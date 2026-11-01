@@ -7,7 +7,7 @@ brightness instantly on any touch, key, click, or pen stroke.**
 
 ![Idle Dimmer interacting with its Quick Settings panel](docs/media/hero.gif)
 
-No installer, no runtime, no network. One 202 KB Win32 executable and a tray icon.
+No installer, no runtime, no network. One 246 KB Win32 executable and a tray icon.
 
 ---
 
@@ -29,16 +29,34 @@ running, the GPU keeps its surface, and the restore is immediate rather than a w
 ## What it does
 
 - **Idle dimming** — hardware brightness to 0% after a configurable 1–60 minute threshold
-  (default 2). Restores your exact previous level on the first input of any kind.
+  (default 2). Internal panels go through WMI; external monitors go through DDC/CI, the same
+  mechanism Twinkle Tray uses. Restores your exact previous level on the first input of any kind.
+- **Displays off** — optional second stage: `OffMinutes=N` switches the displays to standby `N`
+  minutes after the dim, `OffInsteadOfDim=1` goes straight to standby at the idle threshold with
+  no dim at all, and the footer's monitor button does it on demand. Standby is the only state that
+  stops the backlight entirely, so it ages the panel less than 0% brightness does
+  (`IMPLEMENTATION.md` §5.1). Any input wakes the screens and restores the brightness.
 - **Protection toggles** — pauses while media is playing, and while a full-screen app is up.
+  Media detection uses Windows' media session list first, then falls back to "an application is
+  rendering audio", so a browser that publishes no media session (media keys disabled) still
+  protects playback.
+- **Live acrylic panel** — the panel blurs whatever is behind it, refreshed while it is open. The
+  Windows materials all degrade to a flat tint on this machine (measured), so the blur is the app's
+  own: capture, downscale, tint. `Acrylic=0` gives the plain plate. Default mode is a snapshot taken
+  before the panel appears (plus one refresh 350 ms later), so screenshots and recordings work
+  normally; `AcrylicLive=1` refreshes continuously, which makes capture tools report a "protected
+  app" — press **Ctrl+Alt+S** first in that mode. `--panel-shot` renders the panel to a file either way.
 - **Sunset tray icon** — the sun in the tray descends toward the horizon as idle time accrues, so
   you can see how close the next dim is without opening anything.
 - **Five tray designs**, live previews, remembered across restarts.
 - **Start with Windows** — a Run-key entry, no service, no scheduled task, no admin rights.
 - **Crash-safe** — the pre-dim brightness is written to disk before dimming, so a hard reset does
   not leave you at 0%.
-- **Never touches your input** — idle time comes from Windows' own `GetLastInputInfo` counter. The
-  app cannot see what you type, and raw-input notifications are only registered *while* dimmed.
+- **Never touches your input** - idle time comes from Windows' own `GetLastInputInfo` counter. The  app cannot see what you type, and raw-input notifications are only registered *while* dimmed.
+- **The acrylic blur reads the screen, in memory only** — while the panel is open it samples the
+  panel's own rectangle to blur it. Nothing is written to disk, nothing leaves the process, and
+  `Acrylic=0` turns it off entirely. If you need a picture of the panel itself, `--panel-shot`
+  renders one (the panel is deliberately excluded from ordinary screenshots while it is open).
 
 ## Install
 
@@ -58,10 +76,14 @@ Click the tray icon — left or right, there is only one UI — to open Quick Se
   power plan.
 - **Idle slider** — 1–60 minutes, every minute the same distance apart, with invisible magnetic
   presets at 1 / 2 / 5 / 10 / 15 / 30 / 60.
-- **Media** / **Full screen** — the two protection toggles.
+- **Media** / **Sound** / **Full screen** — the three protection toggles. Media uses Windows' media
+  session list (knows paused, names the player); Sound uses "this app is rendering audio", which
+  also catches players that publish no session.
+- **Off at idle** — switch the displays off at the threshold instead of dimming them.
 - **Start at login** — the autostart Run-key entry.
 - **Power card** — wake count, last dim, and estimated display hours saved, persisted across runs.
-- **Footer** — open the app folder, quit (which always restores brightness first).
+- **Footer** — turn the displays off now (monitor icon), dim immediately (crescent), open the app
+  folder, quit (which always restores brightness first).
 
 The panel never takes keyboard focus. It is created `WS_EX_NOACTIVATE`, so it cannot steal the caret
 from whatever you are typing in, and it closes on click-away or Escape without swallowing the click.
@@ -74,13 +96,21 @@ from whatever you are typing in, and it closes on click-away or Escape without s
 [Settings]
 Enabled=1
 ProtectMedia=1
+ProtectSound=1
 ProtectFullscreen=1
 IdleMinutes=2
 Icon=4
+OffMinutes=0
+OffInsteadOfDim=0
+Acrylic=1
 ```
 
-Out-of-range values are clamped. `brightness-recovery.bin` holds the crash-recovery brightness, and
-`activity.log` records dim and restore events only — no keys, no screen content, no network.
+`OffMinutes` is the displays-off delay after a dim: `0` never switches them off (the default),
+`1`–`60` switches them to standby that many minutes after the brightness reaches 0%.
+`OffInsteadOfDim=1` skips the dim and switches the displays off at the idle threshold instead
+(`OffMinutes` is then unused). Out-of-range values are clamped. `brightness-recovery.bin` and `ddc-recovery.bin` hold the crash-recovery
+brightness, and `activity.log` records dim, restore and displays-off events only — no keys, no
+screen content, no network.
 
 ## Efficiency
 
@@ -124,7 +154,7 @@ application icon, and then runs two gates that **fail the build**:
 | `--status` | write the runtime report to `diagnostics.txt` |
 | `--menu` | open or close the panel |
 | `--self-test` | run the assertion suite |
-| `--diagnose` | report media API, brightness API, panels, autostart, threshold |
+| `--diagnose` | report media API (sessions and the audio fallback, separately), brightness API, panels, autostart, threshold |
 | `--test-brightness` | one full dim/restore cycle with a pass/fail report |
 | `--autostart` | silent start, used by the Run-key entry |
 

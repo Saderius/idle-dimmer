@@ -30,6 +30,17 @@
 // Full-screen guard decision logic. Pure header, no link deps, kept separate so --self-test
 // can pin the maximised-window case that stopped this machine dimming at all.
 #include "ScreenGuard.h"
+// DDC/CI brightness for external monitors. The WMI path only ever drives a laptop's internal
+// panel; on a desktop it answers WBEM_E_NOT_SUPPORTED and previously nothing dimmed at all.
+// dxva2 is loaded by name inside the header, so this adds no link dependency.
+#include "DdcBrightness.h"
+// Audio-playback fallback for the media protection. SMTC (MediaPlaying) only sees players that
+// opt into publishing a session; a Chromium browser with media keys disabled publishes none, so
+// the app dimmed over a playing video. WASAPI sessions are not opt-in. See the header.
+#include "AudioPlayback.h"
+// Live acrylic for the panel: capture behind the panel, blur, tint, paint as the base. Every
+// native route to the Windows material was measured failing on this machine (see Acrylic.h).
+#include "Acrylic.h"
 
 template<class T> struct Ptr {
     T* p = nullptr;
@@ -88,10 +99,17 @@ static const wchar_t* kClass=L"IdleDimmerNativeWindow";
 static const wchar_t* kRunKey=L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 static const wchar_t* kRunName=L"Idle Dimmer";
 static const UINT kTray=WM_APP+1, kRestore=WM_APP+2, kQuit=WM_APP+3, kEnable=WM_APP+4, kReport=WM_APP+5, kShowPanel=WM_APP+6;
-static const UINT kCheckTimer=1, kTestTimer=2, kPanelTimer=3, kPanelMotionTimer=4;
+static const UINT kCheckTimer=1, kTestTimer=2, kPanelTimer=3, kPanelMotionTimer=4, kOffTimer=5, kCaptureWatchTimer=6;
 // Posted by the low-level mouse hook when a click lands outside the panel. The hook itself
 // only measures a rect and posts - it must never block, or Windows silently drops the hook.
 static const UINT kPanelDismiss=WM_APP+7;
+// --panel-shot: capture the panel's own rect to panel-shot.bmp (audit aid, see PanelProc).
+static const UINT kPanelShot=WM_APP+12;
+// --acrylic-pause: freeze the blur and clear the capture exclusion so the panel can be screenshotted.
+static const UINT kAcrylicPause=WM_APP+13;
+// Ctrl+Alt+S does the same thing from the keyboard. A tray app that is invisible to screenshots
+// needs a way out that does not require a terminal.
+static const int kAcrylicHotkey=1;
 static const wchar_t* kPanelClass=L"IdleDimmerPanel";
 // Command ids. The classic context menu is gone; the panel calls the same handlers directly
 // from ActivatePanelTarget. Two ids survive: kDimTest because --test-brightness posts it,
@@ -117,29 +135,62 @@ static HICON LoadStateIcon(int design,bool light,int px,const wchar_t* state);
 static int TrayIconSize();
 static int DescentBucket(DWORD idle,DWORD threshold);
 static DWORD idleMs=120000;
-static int iconDesign=3;
+static int iconDesign=4;
 static bool taskbarLight=false;
 static DWORD ClampIdleMinutes(long minutes){return minutes<1?1:(minutes>60?60:(DWORD)minutes);}
 static int ClampIconDesign(long design){return design<1?1:(design>kIconDesignCount?kIconDesignCount:(int)design);}
+// 0 = never switch the displays off. Up to an hour, matching the idle slider's range.
+static DWORD ClampOffMinutes(long minutes){return minutes<0?0:(minutes>60?60:(DWORD)minutes);}
 static HWND window;
 static NOTIFYICONDATAW tray={};
 static HICON iconOn,iconOff,iconDim;
 static UINT taskbarCreated;
 static bool enabled=true,protectMedia=true,protectFullscreen=true,locked=false,dimmed=false;
+// Audio-based protection ("Sound"): pause dimming when any application is rendering audio, even if
+// it publishes no Windows media session. Separate from protectMedia because the two signals answer
+// different questions and fail independently (IMPLEMENTATION.md §7.2).
+static bool protectSound=true;
+// Live acrylic on the panel. On by default because the machine's native materials all degrade to a
+// flat tint (Acrylic.h); off gives the plain #2C2C2C plate and nothing is captured at all.
+static bool acrylicEnabled=true;
+// Live refresh by default: a snapshot froze whatever was animating behind the panel (a Windows
+// flyout caught mid-dismiss stays in the background), which reads as a bug. Live needs the capture
+// exclusion, so Ctrl+Alt+S (or --acrylic-pause) freezes + drops it when a screenshot is wanted.
+static bool acrylicLiveEnabled=false;
+// Displays-off state, kept apart from `dimmed`: the screens can be off while dimmed (the timeout
+// or the footer button after a dim) or off while not dimmed (the footer button on a live desktop).
+static bool displaysOff=false;
+static DWORD offMinutes=0;
+static bool offInsteadOfDim=false;
+// How long a click that switched the displays off is ignored, so the same click's release cannot
+// wake them straight back up. Same reason manualDimIgnoreUntil exists.
+static ULONGLONG offIgnoreUntil=0;
 // Process start supplies the power card's session uptime denominator.
 static const ULONGLONG processStartTick=GetTickCount64();
 static bool inputRegistered=false,restorePending=false,testing=false,closing=false;
 static ULONGLONG graceUntil=0;
 static unsigned checks=0;
 static bool testExit=false;
-static wchar_t folder[MAX_PATH],exe[MAX_PATH],ini[MAX_PATH],stateFile[MAX_PATH],statsFile[MAX_PATH],reportFile[MAX_PATH],logFile[MAX_PATH];
+static wchar_t folder[MAX_PATH],exe[MAX_PATH],ini[MAX_PATH],stateFile[MAX_PATH],statsFile[MAX_PATH],reportFile[MAX_PATH],logFile[MAX_PATH],ddcFile[MAX_PATH];
 static wchar_t status[128]=L"Starting";
 static Ptr<MediaManager> media;
 static Ptr<ManagerOperation> mediaOperation;
 static HRESULT mediaError=S_OK;
+// The audio fallback's own error and counts, kept separate from the media session ones because
+// the two signals fail independently and --diagnose has to say which one answered.
+static HRESULT audioError=S_OK;
+static int audioActiveSessions=0,audioTotalSessions=0;
 struct Panel { wchar_t path[1024]; BYTE brightness; };
 struct Saved { DWORD magic; DWORD count; Panel panels[4]; };
 static Saved saved={};
+// DDC/CI recovery state, kept in its own file with its own magic. The two mechanisms have
+// different identities (a WMI instance path vs. a monitor description), different limits, and
+// they fail independently, so one struct holding both would let a WMI-shaped validation rule
+// reject perfectly good DDC state. 'DDC1'.
+struct DdcPanel { wchar_t desc[ddc::kMaxDesc]; DWORD brightness; DWORD min; DWORD max; };
+struct DdcSaved { DWORD magic; DWORD count; DdcPanel monitors[ddc::kMaxMonitors]; };
+static const DWORD kDdcMagic=0x31434444;
+static DdcSaved ddcSaved={};
 // Durable power-dashboard counters. Survive process restarts so "Display hours saved" (and the
 // rest of the card) do not reset to zero every launch. Process ticks are never persisted: they
 // are meaningless across restarts, so only the aggregates and a wall-clock "last dim" time are.
@@ -151,6 +202,7 @@ static unsigned long long persistedLastDimWallMs=0;
 static unsigned long long sessionDimmedBaseMs=0;
 static ULONGLONG lastStatsTick=0;
 static Saved testBefore={};
+static DdcSaved testBeforeDdc={};
 static bool manualDim=false;
 static ULONGLONG manualDimIgnoreUntil=0ULL;
 // Click-away dismissal. Installed only while the panel is visible (see ShowPanel/HidePanel).
@@ -163,16 +215,26 @@ static bool panelEntering=false;
 static bool panelExiting=false;
 static int panelExitFromOffset=0;
 
-static HWND panelWindow=nullptr;static bool PanelHasBackdrop=false, PanelHasCorners=false;static void WriteRuntimeReport() {
+static HWND panelWindow=nullptr;static bool PanelHasBackdrop=false, PanelHasCorners=false;
+// How many panel paints used a live acrylic frame. Reported by --status: the worker producing
+// frames proves the pipeline runs, this proves the painter consumed them.
+static unsigned acrylicPaints=0;static void WriteRuntimeReport() {
     FILE* f=_wfopen(reportFile,L"w, ccs=UTF-8");
     if(f){
-        fwprintf(f,L"Status: %ls\nEnabled: %d\nDimmed: %d\nIdle threshold: %u minutes\nIdle checks: %u\nInput notifications registered: %d\n",status,enabled,dimmed,idleMs/60000,checks,inputRegistered);
+        const wchar_t* acrylicText;
+        if(!acrylicEnabled)acrylicText=L"off (flat plate)";
+        else if(acrylic::Running())acrylicText=L"live";
+        else if(acrylic::Paused())acrylicText=L"frozen for screenshots";
+        else if(acrylic::Frames()>0)acrylicText=L"snapshot at open (no refresh; screenshots work)";
+        else acrylicText=L"snapshot pending";
+        fwprintf(f,L"Status: %ls\nEnabled: %d\nDimmed: %d\nDisplays off: %d\nIdle threshold: %u minutes\nIdle checks: %u\nInput notifications registered: %d\nAcrylic: %ls; frames %d; painted %u\n",status,enabled,dimmed,displaysOff,idleMs/60000,checks,inputRegistered,acrylicText,acrylic::Frames(),acrylicPaints);
         // Panel observability. There is no interactive preview in this environment, so the
         // panel's existence, visibility and which DWM tier it got are reported here rather
         // than assumed from the fact that the code compiled.
-        fwprintf(f,L"Panel window: %ls\nPanel visible: %ls\nBackdrop: %ls\nRounded corners: %ls\n",
+        fwprintf(f,L"Panel window: %ls\nPanel visible: %ls\nPanel rect: %ld,%ld %ldx%ld\nBackdrop: %ls\nRounded corners: %ls\n",
                  panelWindow?L"created":L"not created",
                  (panelWindow&&IsWindowVisible(panelWindow))?L"yes":L"no",
+                 panelBounds.left,panelBounds.top,panelBounds.right-panelBounds.left,panelBounds.bottom-panelBounds.top,
                  PanelHasBackdrop?L"acrylic":L"opaque fallback",
                  PanelHasCorners?L"yes":L"no");
         fclose(f);
@@ -273,6 +335,48 @@ static bool LoadBrightness() {
     for(DWORD i=0;i<s.count;i++)if(s.panels[i].path[1023]!=0||s.panels[i].brightness>100||!wcsstr(s.panels[i].path,L"WmiMonitorBrightnessMethods."))return false;
     saved=s;return true;
 }
+// DDC/CI, the path that actually exists on a desktop with external monitors. See
+// DdcBrightness.h for the measurement that forced it and for how dxva2 is resolved.
+static HRESULT CaptureDdc(DdcSaved& out) {
+    out={};out.magic=kDdcMagic;
+    ddc::Monitor monitors[ddc::kMaxMonitors];
+    int count=ddc::Enumerate(monitors,ddc::kMaxMonitors);
+    for(int i=0;i<count;i++){
+        wcsncpy(out.monitors[i].desc,monitors[i].desc,ddc::kMaxDesc-1);
+        out.monitors[i].brightness=monitors[i].current;
+        out.monitors[i].min=monitors[i].min;
+        out.monitors[i].max=monitors[i].max;
+    }
+    out.count=(DWORD)count;
+    return count?S_OK:HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+}
+static HRESULT SetDdcLevels(const DdcSaved& s,bool restore) {
+    if(!s.count)return S_OK;
+    // Occurrence, not index: all three measured monitors report "Generic PnP Monitor", so the
+    // second saved entry has to mean the second such monitor. See ddc::FindMonitor.
+    const wchar_t* descs[ddc::kMaxMonitors]={};
+    for(DWORD i=0;i<s.count;i++)descs[i]=s.monitors[i].desc;
+    HRESULT first=S_OK;
+    for(DWORD i=0;i<s.count;i++){
+        DWORD level=restore?s.monitors[i].brightness:0;
+        int occurrence=ddc::Occurrence(descs,(int)i,s.monitors[i].desc);
+        if(!ddc::SetLevel(s.monitors[i].desc,occurrence,level)&&SUCCEEDED(first))first=E_FAIL;
+    }
+    return first;
+}
+static bool SaveDdcBrightness() {
+    if(!ddcSaved.count)return true;
+    HANDLE f=CreateFileW(ddcFile,GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(f==INVALID_HANDLE_VALUE)return false;
+    DWORD n=0;bool ok=WriteFile(f,&ddcSaved,sizeof(ddcSaved),&n,nullptr)&&n==sizeof(ddcSaved);FlushFileBuffers(f);CloseHandle(f);return ok;
+}
+static bool LoadDdcBrightness() {
+    HANDLE f=CreateFileW(ddcFile,GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);if(f==INVALID_HANDLE_VALUE)return false;
+    DdcSaved s={};DWORD n=0;bool ok=ReadFile(f,&s,sizeof(s),&n,nullptr)&&n==sizeof(s);CloseHandle(f);
+    if(!ok||s.magic!=kDdcMagic||!s.count||s.count>ddc::kMaxMonitors)return false;
+    for(DWORD i=0;i<s.count;i++)if(s.monitors[i].desc[ddc::kMaxDesc-1]!=0||s.monitors[i].brightness>100)return false;
+    ddcSaved=s;return true;
+}
 static unsigned long long WallNowMs() {
     FILETIME ft;GetSystemTimeAsFileTime(&ft);
     ULARGE_INTEGER u;u.LowPart=ft.dwLowDateTime;u.HighPart=ft.dwHighDateTime;
@@ -358,32 +462,124 @@ static void UpdateTray() {
     swprintf(tray.szTip,128,L"Idle Dimmer - %.100ls",status);
     tray.uFlags=NIF_ICON|NIF_TIP|NIF_MESSAGE;Shell_NotifyIconW(NIM_MODIFY,&tray);
 }
+// ---------------------------------------------------------------------------
+// Switching the displays off
+// ---------------------------------------------------------------------------
+// WHY SC_MONITORPOWER AND NOT A DDC/CI POWER WRITE
+//
+// Twinkle Tray's button writes VCP 0xD6 over DDC/CI, and that works - but it hands the recovery
+// problem to the monitor: while the panel is in that state only a successful DDC wake write brings
+// it back. If it ignores the write, or the link drops while it is off, the screen stays dark with
+// no operating-system route out. The broadcast below is the request the power plan itself makes:
+// the display enters DPMS standby, Windows brings it back on the next input, and this app only has
+// to restore the brightness it captured. A tray utility must not be able to strand a dark monitor.
+static void SetKeepAwake(bool includeDisplay) {
+    SetThreadExecutionState(ES_CONTINUOUS|ES_SYSTEM_REQUIRED|(includeDisplay?ES_DISPLAY_REQUIRED:0));
+}
+// Raw input has to be registered for the wake to be seen even when nothing was dimmed (the footer
+// button on an already-lit desktop), so this is not tied to `dimmed`.
+static void OffDisplays() {
+    if(displaysOff)return;
+    SetKeepAwake(false);                       // the display claim would fight the standby request
+    if(!inputRegistered)InputEvents(true);
+    displaysOff=true;
+    offIgnoreUntil=GetTickCount64()+600;       // the click that asked for this must not wake it
+    SendMessageW(HWND_BROADCAST,WM_SYSCOMMAND,SC_MONITORPOWER,2);
+    // Two different aftermaths, and the tray tooltip must not promise a restore that will not
+    // happen: with no captured level (off instead of dim, or the footer button on a lit desktop)
+    // there is no brightness to put back, only a screen to wake.
+    const bool brightnessChanged=saved.count>0||ddcSaved.count>0;
+    wcscpy(status,brightnessChanged?L"Displays off; input restores brightness":L"Displays off; input wakes them");
+    Log(L"Displays switched off");UpdateTray();
+}
+// Called on any input, and by every path that restores brightness. Idempotent.
+static void WakeDisplays() {
+    if(!displaysOff)return;
+    displaysOff=false;
+    SendMessageW(HWND_BROADCAST,WM_SYSCOMMAND,SC_MONITORPOWER,-1);
+    if(enabled)SetKeepAwake(true);
+    if(!dimmed){                               // the dimmed path unregisters inside Restore()
+        InputEvents(false);
+        wcscpy(status,L"Enabled; waiting for idle");
+        UpdateTray();
+    }
+}
+// "Off instead of dim": at the idle threshold the displays go to standby and the brightness is
+// never touched.
+//
+// `dimmed` is set even though nothing was dimmed, and that is deliberate. The scheduler treats
+// `dimmed` as the settled state - ScheduleWaitMs returns the two-minute dimmed cadence instead of
+// the 250 ms "a dim is due right now" wake - so leaving it false would have the app re-decide four
+// times a second for as long as the machine is idle, which is exactly the idle-CPU defect that
+// function's comment records. Restore() clears a dimmed state that captured nothing.
+static void StartOffInsteadOfDim() {
+    const ULONGLONG now=GetTickCount64();
+    dimmed=true;
+    lastStatsTick=now;                 // the dark interval starts here, as it does in Dim()
+    persistedLastDimWallMs=WallNowMs();
+    sessionstats::NoteDim(now);        // the power card counts a dark display, which this is
+    SaveStats();
+    OffDisplays();
+}
 static bool Restore() {
-    if(!saved.count)return true;
-    HRESULT hr=SetLevels(saved,true);
-    if(FAILED(hr)){ErrorStatus(L"Restore failed; retrying",hr);UpdateTray();return false;}
+    // Every restore path (input, lock, suspend, quit) also ends the pending displays-off timer and
+    // brings the screens back if they were already asleep. Doing it before the empty-state return
+    // matters: with nothing saved there is no brightness to restore, but the displays may still
+    // have been switched off by the footer button.
+    KillTimer(window,kOffTimer);
+    WakeDisplays();
+    const bool anySaved=saved.count>0||ddcSaved.count>0;
+    // Nothing captured and nothing dark: the ordinary armed-and-awake case, nothing to do.
+    // `dimmed` is part of the test because "off instead of dim" sets it without capturing a level
+    // - that state still has to be cleared, or the scheduler would sit in its dimmed cadence and
+    // the app would behave as if a dim were outstanding forever.
+    if(!anySaved&&!dimmed)return true;
+    // Both mechanisms are restored even when only one of them dimmed: with a laptop panel and
+    // external monitors attached, one dim may have touched both, and skipping the empty one
+    // costs nothing (SetLevels/SetDdcLevels return S_OK with zero entries).
+    if(anySaved){
+        HRESULT hr=SetLevels(saved,true);
+        HRESULT dhr=SetDdcLevels(ddcSaved,true);
+        if(FAILED(hr)||FAILED(dhr)){ErrorStatus(L"Restore failed; retrying",FAILED(hr)?hr:dhr);UpdateTray();return false;}
+    }
     // Close out the final dimmed segment before clearing `dimmed`. The scheduler's dimmed
     // cadence is two minutes (kCheckDimmedMs), so an ordinary input restore arrives long before
     // the next check. Without this line the last - usually only - segment of every short dim was
     // never counted, which kept the card's bar at zero and undercounted "Display hours saved":
     // 79 recorded dims had accumulated 7.8 h, i.e. only the long ones.
     if(dimmed&&lastStatsTick){sessionstats::AccumulateDimmed(GetTickCount64()-lastStatsTick);lastStatsTick=0;}
-    saved={};dimmed=false;manualDim=false;manualDimIgnoreUntil=0ULL;DeleteFileW(stateFile);InputEvents(false);restorePending=false;
+    saved={};ddcSaved={};dimmed=false;manualDim=false;manualDimIgnoreUntil=0ULL;DeleteFileW(stateFile);DeleteFileW(ddcFile);InputEvents(false);restorePending=false;
     // Counted on the success path only, and before the return: a restore that failed and is being
     // retried has not restored anything yet. Placed after `return true` it would be dead code.
     sessionstats::NoteRestore(GetTickCount64());
-    wcscpy(status,L"Enabled; waiting for idle");Log(L"Previous brightness restored");UpdateTray();SaveStats();return true;
+    wcscpy(status,L"Enabled; waiting for idle");Log(anySaved?L"Previous brightness restored":L"Displays woken; brightness unchanged");UpdateTray();SaveStats();return true;
 }
 static bool Dim() {
+    // Two independent mechanisms, captured together so the restore is symmetric:
+    //   WMI      - a laptop's internal panel (WmiSetBrightness)
+    //   DDC/CI   - external monitors (dxva2 SetMonitorBrightness)
+    // Either one working is enough to dim. Before this, a desktop with no internal panel failed
+    // here with "Brightness unavailable" and nothing ever dimmed: MEASURED 2026-10-31, WMI
+    // answered 0x8004100C (WBEM_E_NOT_SUPPORTED) with 0 internal panels while all three external
+    // monitors answered DDC.
     HRESULT hr=Capture(saved);
-    if(FAILED(hr)){saved={};ErrorStatus(L"Brightness unavailable",hr);UpdateTray();return false;}
-    if(!SaveBrightness()){saved={};ErrorStatus(L"Cannot save brightness",HRESULT_FROM_WIN32(GetLastError()));return false;}
+    HRESULT dhr=CaptureDdc(ddcSaved);
+    if(FAILED(hr)&&FAILED(dhr)){
+        saved={};ddcSaved={};
+        ErrorStatus(L"Brightness unavailable",FAILED(hr)?hr:dhr);
+        UpdateTray();return false;
+    }
+    if((saved.count&&!SaveBrightness())||(ddcSaved.count&&!SaveDdcBrightness())){
+        saved={};ddcSaved={};
+        ErrorStatus(L"Cannot save brightness",HRESULT_FROM_WIN32(GetLastError()));return false;
+    }
     if(!InputEvents(true)){Restore();ErrorStatus(L"Input notifications unavailable",HRESULT_FROM_WIN32(GetLastError()));return false;}
-    // Recheck idle state after the WMI calls to avoid dimming over fresh user input.
+    // Recheck idle state after the brightness queries to avoid dimming over fresh user input.
     LASTINPUTINFO input={sizeof(input),0};
     if(!testing&&!manualDim&&(!GetLastInputInfo(&input)||(DWORD)(GetTickCount()-input.dwTime)<idleMs)){Restore();return false;}
     hr=SetLevels(saved,false);
-    if(FAILED(hr)){Restore();ErrorStatus(L"Dimming failed",hr);UpdateTray();return false;}
+    dhr=SetDdcLevels(ddcSaved,false);
+    if(FAILED(hr)&&FAILED(dhr)){Restore();ErrorStatus(L"Dimming failed",FAILED(hr)?hr:dhr);UpdateTray();return false;}
     const ULONGLONG dimTick=GetTickCount64();
     sessionstats::NoteDim(dimTick);
     // The dimmed interval starts here. Check() refreshes this on every dimmed tick, but a dim
@@ -392,7 +588,12 @@ static bool Dim() {
     // the dim. Restore() closes the interval with now - lastStatsTick.
     lastStatsTick=dimTick;
     persistedLastDimWallMs=WallNowMs();
-    dimmed=true;wcscpy(status,L"Dimmed; input restores brightness");Log(L"Dimmed to minimum brightness");UpdateTray();SaveStats();return true;
+    dimmed=true;wcscpy(status,L"Dimmed; input restores brightness");Log(L"Dimmed to minimum brightness");UpdateTray();SaveStats();
+    // Second stage: after the configured delay, stop emitting light entirely. Armed here rather
+    // than in Check() so a dim started from the panel button or --test-brightness behaves the
+    // same as a scheduled one; Restore() kills it. 0 = keep the old dim-only behaviour.
+    if(offMinutes)SetTimer(window,kOffTimer,offMinutes*60000,nullptr);
+    return true;
 }
 static HRESULT InitMedia() {
     if(media||mediaOperation){return S_OK;}
@@ -462,6 +663,27 @@ static int MediaPlaying() {
         if(state==4||state==5){return 1;} // Playing or Paused.
     }
     return unknown?-1:0;
+}
+// What the media protection actually consumes.
+//
+// SMTC is asked first and its answer is final when it is positive: it knows Paused and it names
+// the player. Only when it reports nothing does the WASAPI fallback run, because a player that
+// publishes no session is invisible to SMTC and would otherwise be dimmed over.
+//
+// Returns 1 = a media session is Playing/Paused, 2 = audio is rendering on the default endpoint,
+// 0 = nothing is in use, -1 = neither signal could be read (unknown must pause dimming).
+static int MediaInUse() {
+    // Two switches, two signals. "Media" is the Windows session list (it distinguishes Paused and
+    // names the player); "Sound" is the WASAPI fallback that closes the hole a browser with media
+    // keys disabled leaves (§7.2). They are asked separately because they can now be switched off
+    // separately: turning Sound off must not make a working media session invisible, and vice
+    // versa, so a positive answer from either one still pauses dimming.
+    int playing=protectMedia?MediaPlaying():0;
+    if(playing!=0)return playing;            // playing, or the session query itself failed
+    audioActiveSessions=0;audioTotalSessions=0;
+    if(!protectSound){audioError=S_OK;return 0;}
+    int state=audio::AnyActive(&audioError,&audioActiveSessions,&audioTotalSessions);
+    return state==1?2:state;
 }
 static bool Fullscreen() {
     // The shell state is kept. All three values are documented full-screen or presentation
@@ -599,16 +821,23 @@ static void Check() {
             if(idle<idleMs&&GetTickCount64()<graceUntil){ScheduleNext();return;}
         }
     }
-    int playing=protectMedia?MediaPlaying():0;
+    int playing=(protectMedia||protectSound)?MediaInUse():0;
     bool full=protectFullscreen&&Fullscreen();
     if(!manualDim&&(playing!=0||full)){
         Restore();graceUntil=GetTickCount64()+idleMs;
-        wcscpy(status,playing==1?L"Paused for media playback":playing<0?L"Media detection unavailable; dimming paused":L"Paused for full-screen app");UpdateTray();ScheduleNext();return;
+        // 2 is the audio fallback, kept distinct in the status so the reason is visible without a
+        // log dive: a browser with media keys off publishes no SMTC session at all.
+        wcscpy(status,playing==1?L"Paused for media playback":playing==2?L"Paused for audio playback":playing<0?L"Media detection unavailable; dimming paused":L"Paused for full-screen app");UpdateTray();ScheduleNext();return;
     }
     LASTINPUTINFO input={sizeof(input),0};if(!GetLastInputInfo(&input)){ScheduleNext();return;}
     DWORD idle=GetTickCount()-input.dwTime;
     if(dimmed&&!manualDim&&idle<idleMs){Restore();graceUntil=GetTickCount64()+idleMs;}
-    else if(!dimmed&&ShouldDim(enabled,locked,idle,GetTickCount64(),graceUntil,idleMs,false,false))Dim();
+    else if(!dimmed&&ShouldDim(enabled,locked,idle,GetTickCount64(),graceUntil,idleMs,false,false)){
+        // The threshold is reached. Which stage runs first is the user's choice: dim (default), or
+        // go straight to standby with the brightness untouched.
+        if(offInsteadOfDim)StartOffInsteadOfDim();
+        else Dim();
+    }
     else if(!dimmed){wcscpy(status,L"Enabled; waiting for idle");UpdateTray();}
     ScheduleNext();
 }
@@ -641,14 +870,30 @@ static void ToggleAutostart() {
 struct Settings {
     bool enabled;
     bool protectMedia;
+    bool protectSound;
     bool protectFullscreen;
     DWORD idleMinutes;
     int iconDesign;
+    // Minutes to keep dimming before the displays are switched off (0 = never). Separate from
+    // idleMinutes because they answer different questions: when to dim, and when to stop
+    // emitting light at all. 0 keeps the old behaviour byte-for-byte, so an untouched install
+    // never sleeps a monitor it did not sleep before.
+    DWORD offMinutes;
+    // Switch the displays off AT the idle threshold instead of dimming first. Mutually exclusive
+    // with offMinutes (no dim happens, so there is no post-dim delay to measure): when set, the
+    // threshold check goes straight to standby and brightness is never touched.
+    bool offInsteadOfDim;
+    // Live acrylic: capture what is behind the panel, blur and tint it, paint it as the base.
+    // Off = the flat plate, and nothing is captured or threaded at all.
+    bool acrylic;
+    // Live refresh of the material while the panel is open. Off = one snapshot taken before the
+    // panel appears, which needs no capture exclusion and keeps screenshots working.
+    bool acrylicLive;
 };
 // The defaults the five startup reads used to hand to the profile API.
 static Settings DefaultSettings() {
     Settings s;
-    s.enabled=true;s.protectMedia=true;s.protectFullscreen=true;s.idleMinutes=2;s.iconDesign=3;
+    s.enabled=true;s.protectMedia=true;s.protectSound=true;s.protectFullscreen=true;s.idleMinutes=2;s.iconDesign=4;s.offMinutes=0;s.offInsteadOfDim=false;s.acrylic=true;s.acrylicLive=false;
     return s;
 }
 // ASCII case-insensitive compare of len characters against a NUL-terminated name. Hand-rolled
@@ -717,9 +962,14 @@ static Settings ParseSettings(const char* text) {
         long value=0;
         if(NameEq(start+first,keyLen,"Enabled")){if(ParseDecimal(start+valueFirst,valueLen,value))out.enabled=value!=0;}
         else if(NameEq(start+first,keyLen,"ProtectMedia")){if(ParseDecimal(start+valueFirst,valueLen,value))out.protectMedia=value!=0;}
+        else if(NameEq(start+first,keyLen,"ProtectSound")){if(ParseDecimal(start+valueFirst,valueLen,value))out.protectSound=value!=0;}
         else if(NameEq(start+first,keyLen,"ProtectFullscreen")){if(ParseDecimal(start+valueFirst,valueLen,value))out.protectFullscreen=value!=0;}
         else if(NameEq(start+first,keyLen,"IdleMinutes")){if(ParseDecimal(start+valueFirst,valueLen,value))out.idleMinutes=ClampIdleMinutes(value);}
         else if(NameEq(start+first,keyLen,"Icon")){if(ParseDecimal(start+valueFirst,valueLen,value))out.iconDesign=ClampIconDesign(value);}
+        else if(NameEq(start+first,keyLen,"OffMinutes")){if(ParseDecimal(start+valueFirst,valueLen,value))out.offMinutes=ClampOffMinutes(value);}
+        else if(NameEq(start+first,keyLen,"OffInsteadOfDim")){if(ParseDecimal(start+valueFirst,valueLen,value))out.offInsteadOfDim=value!=0;}
+        else if(NameEq(start+first,keyLen,"Acrylic")){if(ParseDecimal(start+valueFirst,valueLen,value))out.acrylic=value!=0;}
+        else if(NameEq(start+first,keyLen,"AcrylicLive")){if(ParseDecimal(start+valueFirst,valueLen,value))out.acrylicLive=value!=0;}
     }
     return out;
 }
@@ -743,11 +993,11 @@ static int AppendDecimal(char* out,int cap,int n,long value) {
 // line endings, keys in a fixed order. Returns the byte count written (excluding the NUL), or
 // 0 when the buffer is too small.
 static int FormatSettings(const Settings& st,char* out,int cap) {
-    static const char* keys[5]={"Enabled","ProtectMedia","ProtectFullscreen","IdleMinutes","Icon"};
-    const long values[5]={(long)(st.enabled?1:0),(long)(st.protectMedia?1:0),(long)(st.protectFullscreen?1:0),(long)st.idleMinutes,(long)st.iconDesign};
+    static const char* keys[10]={"Enabled","ProtectMedia","ProtectSound","ProtectFullscreen","IdleMinutes","Icon","OffMinutes","OffInsteadOfDim","Acrylic","AcrylicLive"};
+    const long values[10]={(long)(st.enabled?1:0),(long)(st.protectMedia?1:0),(long)(st.protectSound?1:0),(long)(st.protectFullscreen?1:0),(long)st.idleMinutes,(long)st.iconDesign,(long)st.offMinutes,(long)(st.offInsteadOfDim?1:0),(long)(st.acrylic?1:0),(long)(st.acrylicLive?1:0)};
     if(!out||cap<2)return 0;
     int n=AppendText(out,cap,0,"[Settings]\r\n");
-    for(int i=0;i<5;i++){
+    for(int i=0;i<10;i++){
         n=AppendText(out,cap,n,keys[i]);
         if(n>=0)n=AppendText(out,cap,n,"=");
         if(n>=0)n=AppendDecimal(out,cap,n,values[i]);
@@ -808,9 +1058,16 @@ static bool WriteSettingsFile(const Settings& st) {
 // so no caller can write a file the startup read would interpret differently.
 static Settings CurrentSettings() {
     Settings st;
-    st.enabled=enabled;st.protectMedia=protectMedia;st.protectFullscreen=protectFullscreen;
+    st.enabled=enabled;st.protectMedia=protectMedia;st.protectSound=protectSound;st.protectFullscreen=protectFullscreen;
     st.idleMinutes=ClampIdleMinutes((long)(idleMs/60000));
     st.iconDesign=ClampIconDesign(iconDesign);
+    // Every field must be assigned: an unset member here is an indeterminate stack value, and the
+    // startup heal wrote one of 411 into settings.ini before this line existed. Any new key added
+    // to Settings has to be added here too.
+    st.offMinutes=ClampOffMinutes((long)offMinutes);
+    st.offInsteadOfDim=offInsteadOfDim;
+    st.acrylic=acrylicEnabled;
+    st.acrylicLive=acrylicLiveEnabled;
     return st;
 }
 // Same name and same callers as before: every toggle, slider commit and icon pick lands here.
@@ -1050,7 +1307,9 @@ static void CurrentPanelState(PanelState& s) {
     s.enabled=enabled;
     s.dimmed=dimmed;
     s.mediaGuard=protectMedia;
+    s.soundGuard=protectSound;
     s.fullscreenGuard=protectFullscreen;
+    s.offMode=offInsteadOfDim;
     s.autostart=Autostart();
     s.minutes=(int)(idleMs/60000);
     LASTINPUTINFO input={sizeof(input),0};
@@ -1086,9 +1345,24 @@ static void CurrentPanelState(PanelState& s) {
         s.lastDimKnown=(persistedLastDimWallMs!=0ULL);
     }
     s.sessionMs=GetTickCount64()-processStartTick;
-    s.buttonCount=4;
+    // Six tiles: the four protections, the displays-off policy and the login toggle. The layout
+    // already reflows to two rows from five buttons upward, so this is the 3+3 arrangement the
+    // geometry tests have always covered.
+    s.buttonCount=6;
 }
 static int panelDpi(HWND h) {
+    // Derived from the CLIENT WIDTH first, because the window is sized from the same relationship
+    // (AnchorPanel uses this dpi to compute r.w = MulDiv(kPanelWidth, dpi, 96)). Asking the OS
+    // instead made the painter lay out at a lower DPI than the window it had been given - the
+    // content occupied the top two thirds of the panel with dead space below, which only became
+    // visible once ordinary screenshots of the panel were possible again.
+    if(h){
+        RECT rc;
+        if(GetClientRect(h,&rc)&&rc.right>0){
+            const int derived=MulDiv(rc.right,96,kPanelWidth);
+            if(derived>=96)return derived;
+        }
+    }
     typedef UINT(WINAPI* DpiFn)(HWND);
     static DpiFn fn=nullptr;
     static bool resolved=false;
@@ -1133,7 +1407,7 @@ static void ForgetLastToggle();
 static void StartDimTest() {
     if(!Restore())return;
     testing=true;
-    if(Dim()){testBefore=saved;SetTimer(window,kTestTimer,3000,nullptr);return;}
+    if(Dim()){testBefore=saved;testBeforeDdc=ddcSaved;SetTimer(window,kTestTimer,3000,nullptr);return;}
     testing=false;
     if(testExit){WriteRuntimeReport();Shutdown();}
 }
@@ -1156,6 +1430,8 @@ static void ActivatePanelTarget(int hit) {
     switch(hit){
     case hitTileDimming:  enabled=!enabled;ApplyEnabled();break;
     case hitTileMedia:    protectMedia=!protectMedia;SaveSettings();Check();break;
+    case hitTileSound:    protectSound=!protectSound;SaveSettings();Check();break;
+    case hitTileOffMode:  offInsteadOfDim=!offInsteadOfDim;SaveSettings();Check();break;
     case hitTileFullscreen: protectFullscreen=!protectFullscreen;SaveSettings();Check();break;
     case hitTileAutostart: ToggleAutostart();break;
     case hitTileFolder:   ShellExecuteW(nullptr,L"open",folder,nullptr,nullptr,SW_SHOWNORMAL);break;
@@ -1186,6 +1462,10 @@ static void ActivatePanelTarget(int hit) {
         break;
     }
     case hitDimNow: DimManual();break;
+    // Manual "turn the displays off now". Dim first when nothing is dimmed, so the wake path has a
+    // captured level to restore and the same state machine owns both stages; if there is no
+    // brightness control at all, Dim() fails and the screens are still switched off.
+    case hitDisplaysOff: HidePanel();if(!dimmed)Dim();OffDisplays();break;
     case hitFooterExit: HidePanel();Shutdown();break;
     }
 }
@@ -1224,12 +1504,37 @@ static LRESULT CALLBACK PanelMouseHook(int code, WPARAM wp, LPARAM lp) {
     }
     return CallNextHookEx(panelHook,code,wp,lp);
 }
+// Is the foreground window owned by a capture tool? Used to freeze automatically, because while
+// acrylic is live the panel is excluded from capture and the tools refuse to start otherwise.
+static bool ForegroundIsCaptureTool() {
+    HWND fg = GetForegroundWindow();
+    if (!fg) return false;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(fg, &pid);
+    if (!pid) return false;
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!process) return false;
+    wchar_t path[MAX_PATH] = {};
+    DWORD size = MAX_PATH;
+    const bool ok = QueryFullProcessImageNameW(process, 0, path, &size) != FALSE;
+    CloseHandle(process);
+    if (!ok) return false;
+    const wchar_t* base = path;
+    for (const wchar_t* p = path; *p; p++)
+        if (*p == L'\\' || *p == L'/') base = p + 1;
+    return acrylic::IsCaptureTool(base);
+}
+
 static void HidePanel(bool clearTrayPair) {
     if(!panelWindow)return;
+    // Live acrylic ends with the panel: the capture thread exits and the exclusion is cleared, so
+    // nothing is running (and nothing is hidden from screenshots) while the UI is absent.
+    acrylic::Stop();
     if(clearTrayPair)ForgetLastToggle();
     if(panelHook){UnhookWindowsHookEx(panelHook);panelHook=nullptr;}
     KillTimer(panelWindow,kPanelTimer);
     KillTimer(panelWindow,kPanelMotionTimer);
+    KillTimer(panelWindow,kCaptureWatchTimer);
     panelEntering=false;
     panelExiting=false;
     // Second guard against the double-click's second dismissal: HidePanel is idempotent, so
@@ -1270,6 +1575,9 @@ static void PanelMotionTick(HWND h) {
     const int y=panelTarget.y+offset;
     SetWindowPos(h,nullptr,panelTarget.x,y,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
     panelBounds=RECT{panelTarget.x,y,panelTarget.x+panelTarget.w,y+panelTarget.h};
+    // The blur follows the window as it slides, so the frost is aligned with what is actually
+    // behind it rather than with where it will end up.
+    if(acrylic::Running())acrylic::SetCaptureRect(panelBounds);
     if(elapsed>=(panelExiting?kPanelExitMs:kPanelEntranceMs)){
         if(panelExiting){HidePanel(false);return;}
         KillTimer(h,kPanelMotionTimer);
@@ -1316,21 +1624,107 @@ static LRESULT CALLBACK PanelProc(HWND h,UINT msg,WPARAM wp,LPARAM lp) {
         PAINTSTRUCT ps;
         HDC dc=BeginPaint(h,&ps);
         RECT rc;GetClientRect(h,&rc);
-        int dpi=96;
-        typedef UINT(WINAPI* DpiFn)(HWND);
-        DpiFn dpiFor=h?reinterpret_cast<DpiFn>(GetProcAddress(GetModuleHandleW(L"user32.dll"),"GetDpiForWindow")):nullptr;
-        if(dpiFor)dpi=(int)dpiFor(h);
+        const int dpi=panelDpi(h);
         PanelState s;CurrentPanelState(s);
-        // PaintPanel composites opaque itself, so the acrylic underneath shows only where
-        // the panel is translucent. With no backdrop the same call yields tier 3.
-        PaintPanel(dc,rc.right,rc.bottom,s,dpi);
+        // The live acrylic frame is the panel's base when one has been produced. Lock/Unlock
+        // brackets the draw so a concurrent Stop() cannot free the bitmap mid-paint; the lock is
+        // held only for this paint, and the worker holds it only long enough to swap an index.
+        HBITMAP backdrop=acrylic::LockFrame();
+        if(backdrop)acrylicPaints++;
+        PaintPanel(dc,rc.right,rc.bottom,s,dpi,backdrop);
+        acrylic::UnlockFrame();
         EndPaint(h,&ps);
         return 0;
     }
     case WM_TIMER:
         if(wp==kPanelMotionTimer){PanelMotionTick(h);return 0;}
         if(wp==kPanelTimer){PanelTick(h);return 0;}
+        if(wp==kCaptureWatchTimer){
+            // A capture tool just took the foreground: freeze now, silently, so its overlay does not
+            // hit the "protected app" refusal. After this the panel keeps its frame and is capturable.
+            if(acrylic::Running()&&ForegroundIsCaptureTool()){
+                KillTimer(panelWindow,kCaptureWatchTimer);
+                acrylic::Pause();
+                InvalidateRect(panelWindow,nullptr,FALSE);
+                Log(L"Acrylic frozen: a screen capture tool took the foreground");
+            }
+            return 0;
+        }
         break;
+    case acrylic::kFrameMessage:
+        // A new blurred frame is ready (posted by the capture worker, not a timer): repaint with
+        // it, keeping the capture rect aligned with wherever the panel currently is.
+        {
+            RECT pr;if(GetWindowRect(panelWindow,&pr))acrylic::SetCaptureRect(pr);
+            InvalidateRect(panelWindow,nullptr,FALSE);
+        }
+        return 0;
+    case kAcrylicPause:
+        // Freeze the material where it is and drop the screenshot exclusion. The panel keeps the
+        // last frame, so what gets screenshotted is exactly what was on screen.
+        acrylic::Pause();
+        InvalidateRect(panelWindow,nullptr,FALSE);
+        return 0;
+    case kPanelShot:
+        // --panel-shot: render the panel exactly as WM_PAINT does, but into a bitmap we own, and
+        // write it to panel-shot.bmp. It cannot be a screen capture: the panel excludes itself from
+        // capture (that is what lets it read what is behind itself), so a screenshot would show the
+        // desktop instead of the panel. If no session is live it starts one for the shot, so the
+        // artifact is deterministic whether or not the panel happens to be open.
+        {
+            // Geometry must not depend on whether the panel happens to be visible: a hidden window
+            // reports DPI 96, which produced a small, wrong-looking render. Use the DPI the panel was
+            // last laid out at.
+            int dpi=panelDpi(panelWindow);
+            if(dpi<=96&&panelEntranceDpi>96)dpi=panelEntranceDpi;
+            PanelState probeState;CurrentPanelState(probeState);
+            const int bc=probeState.buttonCount>0?probeState.buttonCount:6;
+            const int w=MulDiv(kPanelWidth,dpi,96);
+            const int h=MulDiv(PanelHeight(bc),dpi,96);
+            RECT where;GetWindowRect(panelWindow,&where);
+            bool started=false;
+            if(!acrylic::Running()&&acrylicEnabled&&w>0&&h>0){
+                const bool dark=!taskbarLight;
+                const COLORREF tint=dark?RGB(0x20,0x20,0x20):RGB(0xFC,0xFC,0xFC);
+                RECT target={where.left,where.top,where.left+w,where.top+h};
+                started=acrylic::Start(panelWindow,target,w,h,tint,dark?38:0);
+                if(started)Sleep(400);   // audit command: block for one frame rather than race it
+            }
+            HDC screen=GetDC(nullptr);
+            HDC mem=CreateCompatibleDC(screen);
+            BITMAPINFO bi={};
+            bi.bmiHeader.biSize=sizeof(bi.bmiHeader);
+            bi.bmiHeader.biWidth=w;
+            bi.bmiHeader.biHeight=-h;
+            bi.bmiHeader.biPlanes=1;
+            bi.bmiHeader.biBitCount=32;
+            bi.bmiHeader.biCompression=BI_RGB;
+            void* bits=nullptr;
+            HBITMAP bmp=CreateDIBSection(mem,&bi,DIB_RGB_COLORS,&bits,nullptr,0);
+            if(bmp&&bits){
+                SelectObject(mem,bmp);
+                PanelState s;CurrentPanelState(s);
+                HBITMAP bg=acrylic::LockFrame();
+                if(!bg){
+                    // The audit command may land before the worker's first frame; give it one
+                    // interval rather than silently rendering the flat plate.
+                    acrylic::UnlockFrame();
+                    Sleep(350);
+                    bg=acrylic::LockFrame();
+                }
+                PaintPanel(mem,w,h,s,dpi,bg);
+                acrylic::UnlockFrame();
+                wchar_t path[MAX_PATH];
+                swprintf(path,MAX_PATH,L"%ls\\panel-shot.bmp",folder);
+                acrylic::SaveBitsToBmp(bits,w,h,path);
+                SelectObject(mem,nullptr);
+                DeleteObject(bmp);
+            }
+            DeleteDC(mem);
+            ReleaseDC(nullptr,screen);
+            if(started)acrylic::Stop();
+        }
+        return 0;
     // ---- mouse ----------------------------------------------------------------
     // Controls are driven directly rather than via focus, so hit testing works regardless of
     // which window holds the caret - the panel is WS_EX_NOACTIVATE and never takes it.
@@ -1480,10 +1874,31 @@ static void ShowPanel() {
     panelExiting=false;
     if(panelEntering&&!SetTimer(panelWindow,kPanelMotionTimer,16,nullptr))panelEntering=false;
     const int y=r.y+(panelEntering?PanelEntranceOffset(0,dpi):0);
+    // Start the live backdrop against the panel's final geometry BEFORE the window is shown: the
+    // capture exclusion has to exist before the first frame can be grabbed, or the first blur
+    // samples the panel itself and the panel renders a dark smear.
+    if(acrylic::ShouldStart(acrylicEnabled,true)){
+        const bool dark=!taskbarLight;
+        const COLORREF tint=dark?RGB(0x20,0x20,0x20):RGB(0xFC,0xFC,0xFC);
+        const RECT capture={r.x,r.y,r.x+r.w,r.y+r.h};
+        // Tint alpha: Windows' acrylic keeps the backdrop's colour and brightness (its
+        // TintLuminosityOpacity layer), so a heavy flat tint is the wrong model - at 200/255 the
+        // panel read as dark grey over the video while Windows showed the video's colours through it.
+        if(acrylicLiveEnabled)acrylic::Start(panelWindow,capture,r.w,r.h,tint,dark?38:0);
+        else acrylic::StartSnapshot(panelWindow,capture,r.w,r.h,tint,dark?38:0);
+    }
     SetWindowPos(panelWindow,HWND_TOPMOST,r.x,y,r.w,r.h,SWP_SHOWWINDOW|SWP_NOACTIVATE);
     panelBounds=RECT{r.x,y,r.x+r.w,y+r.h};   // hook tests the visible position during the slide
     if(!panelHook) panelHook=SetWindowsHookExW(WH_MOUSE_LL,PanelMouseHook,GetModuleHandleW(nullptr),0);
     SetTimer(panelWindow,kPanelTimer,1000,nullptr);
+    // While the material is live the panel is invisible to capture tools, so watch for one taking
+    // the foreground and freeze ourselves before it complains. 250 ms is enough: the tools spend
+    // longer than that initialising their overlay.
+    if(acrylic::Running())SetTimer(panelWindow,kCaptureWatchTimer,250,nullptr);
+    // Snapshot mode deliberately does NOT refresh after opening. A refresh repaints only when the
+    // capture differs, and when it does the panel visibly changes a moment after appearing - read as
+    // the blur "loading". One frame at open is what a still material can promise; use
+    // AcrylicLive=1 if the backdrop must track what happens behind the panel.
     InvalidateRect(panelWindow,nullptr,FALSE);
 }
 static void EnsurePanel() {
@@ -1621,6 +2036,7 @@ static void Shutdown() {
         enabled=false;SetThreadExecutionState(ES_CONTINUOUS);KillTimer(window,kCheckTimer);return;
     }
     closing=true;HidePanel();KillTimer(window,kCheckTimer);KillTimer(window,kTestTimer);InputEvents(false);SetThreadExecutionState(ES_CONTINUOUS);
+    UnregisterHotKey(window,kAcrylicHotkey);
     WTSUnRegisterSessionNotification(window);Shell_NotifyIconW(NIM_DELETE,&tray);DestroyWindow(window);
 }
 static LRESULT CALLBACK WndProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp) {
@@ -1672,17 +2088,48 @@ static LRESULT CALLBACK WndProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp) {
         }
     case WM_TIMER:
         if(wp==kCheckTimer)Check();
+        if(wp==kOffTimer){
+            // One-shot: the second stage of a dim. The timer is re-armed by the next Dim(), and
+            // Restore() kills it, so a screen that woke early is never switched off afterwards.
+            KillTimer(window,kOffTimer);
+            if(dimmed)OffDisplays();
+        }
         if(wp==kTestTimer){
-            KillTimer(window,kTestTimer);Saved low={},after={};HRESULT readLow=Capture(low);testing=false;
-            bool restored=Restore();HRESULT readAfter=Capture(after);graceUntil=GetTickCount64()+idleMs;
-            bool passed=restored&&SUCCEEDED(readLow)&&SUCCEEDED(readAfter)&&low.count==testBefore.count&&after.count==testBefore.count;
-            for(DWORD i=0;i<testBefore.count&&passed;i++)passed=low.panels[i].brightness==0&&after.panels[i].brightness==testBefore.panels[i].brightness;
-            FILE* f=_wfopen(reportFile,L"w, ccs=UTF-8");if(f){fwprintf(f,L"Hardware dim/restore test: %ls\nBefore: %u%%\nDimmed: %u%%\nRestored: %u%%\n",passed?L"PASS":L"FAIL",testBefore.panels[0].brightness,low.panels[0].brightness,after.panels[0].brightness);fclose(f);}
+            KillTimer(window,kTestTimer);Saved low={},after={};DdcSaved dLow={},dAfter={};
+            HRESULT readLow=Capture(low);CaptureDdc(dLow);testing=false;
+            bool restored=Restore();HRESULT readAfter=Capture(after);CaptureDdc(dAfter);graceUntil=GetTickCount64()+idleMs;
+            // Either mechanism may have done the dimming, and each is verified on its own: WMI
+            // against the internal-panel percentages, DDC against the external monitors' levels.
+            // The test used to know only about WMI, so on a desktop with no internal panel it
+            // reported FAIL no matter what the screen actually did.
+            bool wmiTested=testBefore.count>0;
+            bool wmiPass=wmiTested&&SUCCEEDED(readLow)&&SUCCEEDED(readAfter)&&low.count==testBefore.count&&after.count==testBefore.count;
+            for(DWORD i=0;i<testBefore.count&&wmiPass;i++)wmiPass=low.panels[i].brightness==0&&after.panels[i].brightness==testBefore.panels[i].brightness;
+            bool ddcTested=testBeforeDdc.count>0;
+            bool ddcPass=ddcTested&&dLow.count==testBeforeDdc.count&&dAfter.count==testBeforeDdc.count;
+            for(DWORD i=0;i<testBeforeDdc.count&&ddcPass;i++){
+                DWORD lowValue=dLow.monitors[i].brightness;
+                DWORD backValue=dAfter.monitors[i].brightness;
+                DWORD before=testBeforeDdc.monitors[i].brightness;
+                // At the floor, and back to where it started. One step of slack: DDC levels are
+                // integers a monitor may round, and a stuck or ignored write is many steps away.
+                ddcPass=(lowValue<=dLow.monitors[i].min)&&(backValue+1>=before&&backValue<=before+1);
+            }
+            bool passed=restored&&(wmiTested||ddcTested)&&(!wmiTested||wmiPass)&&(!ddcTested||ddcPass);
+            FILE* f=_wfopen(reportFile,L"w, ccs=UTF-8");
+            if(f){
+                fwprintf(f,L"Hardware dim/restore test: %ls\nWMI panels: %lu\nBefore: %u%%\nDimmed: %u%%\nRestored: %u%%\nDDC monitors: %lu\n",passed?L"PASS":L"FAIL",testBefore.count,testBefore.panels[0].brightness,low.panels[0].brightness,after.panels[0].brightness,testBeforeDdc.count);
+                for(DWORD i=0;i<testBeforeDdc.count;i++)fwprintf(f,L"Monitor %lu: before %lu%% -> dimmed %lu%% -> restored %lu%%\n",i+1,testBeforeDdc.monitors[i].brightness,dLow.monitors[i].brightness,dAfter.monitors[i].brightness);
+                fclose(f);
+            }
             if(testExit)Shutdown();
         }
         return 0;
     case WM_INPUT:
         // Do not inspect keys or mouse data. The existence of input is enough.
+        // The wake comes first: with the displays off, this is the message that means the user is
+        // back, and it must re-take the keep-awake claim even when nothing was dimmed.
+        if(displaysOff&&GetTickCount64()>=offIgnoreUntil)WakeDisplays();
         if(dimmed&&!testing&&!restorePending){
             if(GetTickCount64()>=manualDimIgnoreUntil){
                 HRAWINPUT hRaw=(HRAWINPUT)lp;UINT size=0;
@@ -1734,6 +2181,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp) {
         if(TaskbarIsLight()!=taskbarLight){LoadIcons();UpdateTray();}
         break;
     case WM_QUERYENDSESSION: Restore();return TRUE;
+    case WM_HOTKEY:
+        // Ctrl+Alt+S: freeze the material and drop the capture exclusion so the panel can be
+        // screenshotted. It stays frozen until the panel is closed and reopened, which is
+        // predictable; the alternative (auto-resume) would re-exclude mid-screenshot.
+        if(wp==kAcrylicHotkey&&panelWindow&&IsWindowVisible(panelWindow)){
+            SendMessageTimeoutW(panelWindow,kAcrylicPause,0,0,SMTO_ABORTIFHUNG,2000,nullptr);
+        }
+        return 0;
     case WM_ENDSESSION: if(wp)Shutdown();return 0;
     case WM_CLOSE: case kQuit: Shutdown();return 0;
     case WM_DESTROY: PostQuitMessage(0);return 0;
@@ -1894,24 +2349,30 @@ static bool FlyoutLayoutSelfTest() {
         for(int d=0;d<2;d++){
             const int dpi=dpis[d];
             struct Probe { int target; int cx, cy; };
-            Probe probes[10];
+            Probe probes[12];
             int n=0;
-            for(int i=0;i<4;i++){
-                Rect t=TileRect(i,dpi);
-                int tgt = (i==0)?hitTileDimming:(i==1)?hitTileMedia:(i==2)?hitTileFullscreen:hitTileAutostart;
-                probes[n].target=tgt;
+            // The live panel has six tiles; probe exactly those, in the order the model assigns,
+            // using totalButtons=6 so the coordinates are the ones the panel actually uses.
+            const int tileTargets[6]={hitTileDimming,hitTileMedia,hitTileSound,hitTileFullscreen,hitTileOffMode,hitTileAutostart};
+            for(int i=0;i<6;i++){
+                Rect t=TileRect(i,dpi,6);
+                probes[n].target=tileTargets[i];
                 probes[n].cx=t.x+t.w/2;
                 probes[n].cy=t.y+t.h/2;
                 n++;
             }
-            Rect tr=SliderTrackRect(dpi);
+            Rect tr=SliderTrackRect(dpi,6);
             probes[n].target=hitSliderTrack; probes[n].cx=tr.x+tr.w/2; probes[n].cy=tr.y; n++;
-            Rect dn=DimNowRect(dpi);
+            Rect dn=DimNowRect(dpi,6);
             probes[n].target=hitDimNow; probes[n].cx=dn.x+dn.w/2; probes[n].cy=dn.y+dn.h/2; n++;
-            Rect fe=FooterExitRect(dpi);
+            // The new button must not overlap dim-now or exit: its own centre has to resolve to
+            // its own target, which is exactly what an overlap would break.
+            Rect off=DisplaysOffRect(dpi,6);
+            probes[n].target=hitDisplaysOff; probes[n].cx=off.x+off.w/2; probes[n].cy=off.y+off.h/2; n++;
+            Rect fe=FooterExitRect(dpi,6);
             probes[n].target=hitFooterExit; probes[n].cx=fe.x+fe.w/2; probes[n].cy=fe.y+fe.h/2; n++;
             for(int p=0;p<n;p++){
-                int got=HitTest(probes[p].cx,probes[p].cy,dpi);
+                int got=HitTest(probes[p].cx,probes[p].cy,dpi,6);
                 ok &= Check(got==probes[p].target,L"control centre maps to its own target");
                 // Every probed point must be inside the panel, otherwise the probe is itself
                 // meaningless and the assertion would pass for the wrong reason.
@@ -2103,13 +2564,22 @@ static bool FlyoutLayoutSelfTest() {
         // Hit testing and dynamic reflow: all 5 tiles are independently hittable
         ok &= Check(HitTest(TileRect(0,96,5).x+10, TileRect(0,96,5).y+10, 96, 5) == hitTileDimming, L"5-tile: hit tile 0 is Dimming");
         ok &= Check(HitTest(TileRect(1,96,5).x+10, TileRect(1,96,5).y+10, 96, 5) == hitTileMedia, L"5-tile: hit tile 1 is Media");
-        ok &= Check(HitTest(TileRect(2,96,5).x+10, TileRect(2,96,5).y+10, 96, 5) == hitTileFullscreen, L"5-tile: hit tile 2 is Fullscreen");
-        ok &= Check(HitTest(TileRect(3,96,5).x+10, TileRect(3,96,5).y+10, 96, 5) == hitTileAutostart, L"5-tile: hit tile 3 is Autostart");
-        ok &= Check(HitTest(TileRect(4,96,5).x+10, TileRect(4,96,5).y+10, 96, 5) == hitTileFolder, L"5-tile: hit tile 4 is Folder");
+        ok &= Check(HitTest(TileRect(2,96,5).x+10, TileRect(2,96,5).y+10, 96, 5) == hitTileSound, L"5-tile: hit tile 2 is Sound");
+        ok &= Check(HitTest(TileRect(3,96,5).x+10, TileRect(3,96,5).y+10, 96, 5) == hitTileFullscreen, L"5-tile: hit tile 3 is Fullscreen");
+        ok &= Check(HitTest(TileRect(4,96,5).x+10, TileRect(4,96,5).y+10, 96, 5) == hitTileOffMode, L"5-tile: hit tile 4 is Off at idle");
 
-        // 6 tiles hit test: tile 4 is Icon and tile 5 is Folder
-        ok &= Check(HitTest(TileRect(4,96,6).x+10, TileRect(4,96,6).y+10, 96, 6) == hitTileIcon, L"6-tile: hit tile 4 is Icon");
-        ok &= Check(HitTest(TileRect(5,96,6).x+10, TileRect(5,96,6).y+10, 96, 6) == hitTileFolder, L"6-tile: hit tile 5 is Folder");
+        // 6 tiles hit test: the six the panel actually shows
+        ok &= Check(HitTest(TileRect(4,96,6).x+10, TileRect(4,96,6).y+10, 96, 6) == hitTileOffMode, L"6-tile: hit tile 4 is Off at idle");
+        ok &= Check(HitTest(TileRect(5,96,6).x+10, TileRect(5,96,6).y+10, 96, 6) == hitTileAutostart, L"6-tile: hit tile 5 is Autostart");
+        // Every drawn tile must resolve to a target, and no two tiles may share one - a shared
+        // target means one of them toggles the other one's setting.
+        int seenTargets[6]={};
+        for(int i=0;i<6;i++){
+            const int t=HitTest(TileRect(i,96,6).x+10, TileRect(i,96,6).y+10, 96, 6);
+            ok &= Check(t!=hitNone&&t!=hitSliderTrack&&t!=hitDimNow&&t!=hitFooterExit,L"6-tile: every tile resolves to a tile target");
+            for(int j=0;j<i;j++)ok &= Check(seenTargets[j]!=t,L"6-tile: no two tiles share a target");
+            seenTargets[i]=t;
+        }
 
         // Hit testing for slider and footer controls with 5 and 6 buttons
         Rect tr5 = SliderTrackRect(96, 5);
@@ -2604,7 +3074,7 @@ static bool AccentChecks() {
         if(bmp&&mem){
             HGDIOBJ old=SelectObject(mem,bmp);
             PanelState s={};
-            s.enabled=true; s.mediaGuard=true; s.fullscreenGuard=true; s.autostart=true;
+            s.enabled=true; s.mediaGuard=true; s.soundGuard=true; s.fullscreenGuard=true; s.offMode=false; s.autostart=true;
             s.accent=0xEADFCDu; // bright accent -> onAccent is black (RGB 0,0,0)
             s.buttonCount=4;
             PaintPanel(mem,kPanelWidth,PanelHeight(4),s,96);
@@ -2658,6 +3128,22 @@ static bool AccentChecks() {
             }
             ok&=Check(folderPixels>0,L"glyph: tile 5 (Folder/IC.folder) rendered strokes");
             ok&=Check(folderEdges>0,L"glyph: tile 5 (Folder/IC.folder) has antialiased edge coverage");
+            // The bottom ribbon is its own opaque plate, not a translucent tint over the panel
+            // base. Sampled from a painted surface because that is the only way to prove the
+            // blend did not sneak back in: a tint over #2C2C2C can never land on #222222.
+            {
+                s.dark=true;
+                PaintPanel(mem,kPanelWidth,PanelHeight(6),s,96);
+                COLORREF px=GetPixel(mem,4,FooterY(6)+4);
+                const unsigned int dockRgb=((unsigned int)GetRValue(px)<<16)|((unsigned int)GetGValue(px)<<8)|GetBValue(px);
+                ok&=Check(dockRgb==0x222222u,L"dock: the dark ribbon paints exactly #222222 (Windows' reported value)");
+                s.dark=false;
+                PaintPanel(mem,kPanelWidth,PanelHeight(6),s,96);
+                px=GetPixel(mem,4,FooterY(6)+4);
+                const unsigned int lightRgb=((unsigned int)GetRValue(px)<<16)|((unsigned int)GetGValue(px)<<8)|GetBValue(px);
+                ok&=Check(lightRgb==0xF9F9F9u,L"dock: the light ribbon paints #F9F9F9");
+                s.dark=true;
+            }
             SelectObject(mem,old);
             DeleteObject(bmp);
         }
@@ -2863,7 +3349,7 @@ static int SelfTest() {
     // clean one beside the invisible one.
     {
         Settings defaults=DefaultSettings();
-        ok &= Check(defaults.enabled&&defaults.protectMedia&&defaults.protectFullscreen&&defaults.idleMinutes==2&&defaults.iconDesign==3,L"settings defaults match the old profile-API defaults");
+        ok &= Check(defaults.enabled&&defaults.protectMedia&&defaults.protectSound&&defaults.protectFullscreen&&defaults.idleMinutes==2&&defaults.iconDesign==4&&defaults.offMinutes==0,L"settings defaults match the shipped profile: design 4 is the default icon, displays-off is opt-in");
         // The real damaged file: BOM, then two [Settings] sections. The LAST one wins - it is
         // the one the profile API actually read, so nothing the user chose is lost.
         const char* damaged="\xEF\xBB\xBF[Settings]\r\nEnabled=1\r\nProtectMedia=1\r\nProtectFullscreen=1\r\nIdleMinutes=2\r\nIcon=4\r\n[Settings]\r\nEnabled=0\r\nProtectMedia=0\r\nProtectFullscreen=1\r\nIdleMinutes=1\r\nIcon=4\r\n";
@@ -2876,11 +3362,16 @@ static int SelfTest() {
         ok &= Check(!bom.enabled&&bom.idleMinutes==7&&bom.protectMedia,L"BOM is skipped and LF endings parse");
         // A key that is absent keeps its default rather than becoming zero.
         Settings absent=ParseSettings("[Settings]\nIcon=2\n");
-        ok &= Check(absent.enabled&&absent.protectMedia&&absent.protectFullscreen,L"absent booleans keep their defaults");
+        ok &= Check(absent.enabled&&absent.protectMedia&&absent.protectSound&&absent.protectFullscreen,L"absent booleans keep their defaults");
+        // The Sound switch is independent of the Media switch: turning one off must not silently
+        // turn the other one off, because they gate different signals.
+        Settings soundOff=ParseSettings("[Settings]\r\nProtectSound=0\r\n");
+        ok &= Check(!soundOff.protectSound&&soundOff.protectMedia,L"ProtectSound=0 leaves ProtectMedia alone");
+        ok &= Check(ParseSettings("[Settings]\r\nProtectMedia=0\r\n").protectSound,L"ProtectMedia=0 leaves ProtectSound alone");
         ok &= Check(absent.idleMinutes==2&&absent.iconDesign==2,L"absent IdleMinutes defaults; present Icon applies");
         // An unparseable value keeps its default too.
         Settings junk=ParseSettings("[Settings]\r\nEnabled=yes\r\nIdleMinutes=\r\nIcon=3x\r\n");
-        ok &= Check(junk.enabled&&junk.idleMinutes==2&&junk.iconDesign==3,L"unparseable values keep their defaults");
+        ok &= Check(junk.enabled&&junk.idleMinutes==2&&junk.iconDesign==4,L"unparseable values keep their defaults");
         // Keys outside [Settings], and sections other than it, are ignored.
         Settings outside=ParseSettings("[Other]\r\nEnabled=0\r\n[Settings]\r\nIdleMinutes=4\r\n[Other2]\r\nIdleMinutes=9\r\n");
         ok &= Check(outside.enabled&&outside.idleMinutes==4,L"keys outside [Settings] are ignored");
@@ -2895,10 +3386,61 @@ static int SelfTest() {
         ok &= Check(headers==1,L"canonical text has exactly one section");
         int lineFeeds=0,bareLineFeeds=0;
         for(const char* c=canonical;*c;c++)if(*c=='\n'){lineFeeds++;if(c==canonical||c[-1]!='\r')bareLineFeeds++;}
-        ok &= Check(lineFeeds==6&&bareLineFeeds==0,L"canonical text is CRLF throughout");
+        // Ten keys + the section header = eleven CRLF line breaks.
+        ok &= Check(lineFeeds==11&&bareLineFeeds==0,L"canonical text is CRLF throughout");
         ok &= Check(SettingsTextIsCanonical(canonical),L"canonical text is recognised as canonical");
         Settings roundTrip=ParseSettings(canonical);
-        ok &= Check(roundTrip.enabled==healed.enabled&&roundTrip.protectMedia==healed.protectMedia&&roundTrip.protectFullscreen==healed.protectFullscreen&&roundTrip.idleMinutes==healed.idleMinutes&&roundTrip.iconDesign==healed.iconDesign,L"canonical text round-trips through the parser");
+        ok &= Check(roundTrip.enabled==healed.enabled&&roundTrip.protectMedia==healed.protectMedia&&roundTrip.protectSound==healed.protectSound&&roundTrip.protectFullscreen==healed.protectFullscreen&&roundTrip.idleMinutes==healed.idleMinutes&&roundTrip.iconDesign==healed.iconDesign&&roundTrip.offMinutes==healed.offMinutes&&roundTrip.offInsteadOfDim==healed.offInsteadOfDim,L"canonical text round-trips through the parser");
+        // Displays-off: clamped like the idle threshold, and 0 must survive the round trip as
+        // "never" rather than being turned into a minimum of one minute.
+        ok &= Check(ClampOffMinutes(-5)==0&&ClampOffMinutes(0)==0&&ClampOffMinutes(7)==7&&ClampOffMinutes(61)==60,L"OffMinutes is clamped to 0..60");
+        Settings off=ParseSettings("[Settings]\r\nOffMinutes=30\r\n");
+        ok &= Check(off.offMinutes==30,L"OffMinutes parses");
+        ok &= Check(ParseSettings("[Settings]\r\nOffMinutes=999\r\n").offMinutes==60,L"parsed OffMinutes is clamped");
+        ok &= Check(ParseSettings("[Settings]\r\nOffMinutes=abc\r\n").offMinutes==0&&ParseSettings("[Settings]\r\n").offMinutes==0,L"an absent or unparseable OffMinutes is 'never', not a minimum");
+        char offText[256];int offLen=FormatSettings(off,offText,sizeof(offText));
+        // Writer + canonical check + reader in one assertion: the formatter emits the key, the
+        // canonical test accepts its own output, and the value survives.
+        ok &= Check(offLen>0&&SettingsTextIsCanonical(offText)&&ParseSettings(offText).offMinutes==30,L"OffMinutes is written canonically and reads back");
+        // "Off instead of dim" is a flag, not a delay: absent or unparseable means off, and any
+        // non-zero value means on, so a hand-edited file cannot half-enable it.
+        ok &= Check(!ParseSettings("[Settings]\r\n").offInsteadOfDim,L"OffInsteadOfDim defaults to off");
+        ok &= Check(ParseSettings("[Settings]\r\nOffInsteadOfDim=1\r\n").offInsteadOfDim,L"OffInsteadOfDim=1 parses");
+        ok &= Check(!ParseSettings("[Settings]\r\nOffInsteadOfDim=0\r\n").offInsteadOfDim,L"OffInsteadOfDim=0 parses as off");
+        ok &= Check(!ParseSettings("[Settings]\r\nOffInsteadOfDim=abc\r\n").offInsteadOfDim,L"an unparseable OffInsteadOfDim means off");
+        Settings offMode=ParseSettings("[Settings]\r\nOffInsteadOfDim=1\r\nOffMinutes=9\r\n");
+        char offModeText[256];int offModeLen=FormatSettings(offMode,offModeText,sizeof(offModeText));
+        Settings offModeBack=ParseSettings(offModeText);
+        ok &= Check(offModeLen>0&&SettingsTextIsCanonical(offModeText)&&offModeBack.offInsteadOfDim&&offModeBack.offMinutes==9,L"OffInsteadOfDim and OffMinutes both survive the writer");
+        // Acrylic: on unless the file says otherwise, and it must survive the writer.
+        ok &= Check(DefaultSettings().acrylic,L"live acrylic is on by default");
+        ok &= Check(!ParseSettings("[Settings]\r\nAcrylic=0\r\n").acrylic,L"Acrylic=0 parses as off");
+        ok &= Check(ParseSettings("[Settings]\r\nAcrylic=1\r\n").acrylic,L"Acrylic=1 parses as on");
+        ok &= Check(ParseSettings("[Settings]\r\n").acrylic,L"an absent Acrylic keeps the default");
+        {
+            Settings acrylicOff;
+            acrylicOff.enabled=true;acrylicOff.protectMedia=true;acrylicOff.protectSound=true;
+            acrylicOff.protectFullscreen=true;acrylicOff.idleMinutes=5;acrylicOff.iconDesign=4;
+            acrylicOff.offMinutes=0;acrylicOff.offInsteadOfDim=false;acrylicOff.acrylic=false;
+            char acrylicText[256];int acrylicLen=FormatSettings(acrylicOff,acrylicText,sizeof(acrylicText));
+            ok &= Check(acrylicLen>0&&!ParseSettings(acrylicText).acrylic,L"Acrylic=0 round-trips through the writer");
+        }
+        // CurrentSettings() must carry EVERY field. It writes the file on every toggle, so a member
+        // left unassigned does not fail to compile - it writes an indeterminate stack value, which
+        // is how the startup heal once turned a user's OffMinutes into 411.
+        {
+            DWORD savedOffMinutes=offMinutes;
+            bool savedOffInsteadOfDim=offInsteadOfDim;
+            bool savedProtectSound=protectSound;
+            offMinutes=17;
+            offInsteadOfDim=true;
+            protectSound=false;
+            Settings current=CurrentSettings();
+            ok &= Check(current.offMinutes==17&&current.offInsteadOfDim&&!current.protectSound,L"CurrentSettings carries every field (an unset member heals garbage)");
+            offMinutes=savedOffMinutes;
+            offInsteadOfDim=savedOffInsteadOfDim;
+            protectSound=savedProtectSound;
+        }
         ok &= Check(!SettingsTextIsCanonical(damaged),L"the BOM'd duplicate file is not canonical");
         ok &= Check(!SettingsTextIsCanonical(""),L"an absent file is not canonical");
         ok &= Check(FormatSettings(healed,canonical,8)==0,L"an undersized buffer is refused, not truncated");
@@ -2917,9 +3459,15 @@ static int SelfTest() {
     ok &= ScheduleChecks();
     ok &= PersistedStatsChecks();
     ok &= AccentChecks();
+    int ddcChecks=0;
+    ok &= ddc::Checks(&ddcChecks);
+    int audioChecks=0;
+    ok &= audio::Checks(&audioChecks);
+    int acrylicChecks=0;
+    ok &= acrylic::Checks(&acrylicChecks);
     FILE* f=_wfopen(reportFile,L"w, ccs=UTF-8");
     if(f){
-        fwprintf(f,L"Decision tests: %ls (%d checks)\n",ok?L"PASS":L"FAIL",kTrayCheckCount+flyoutChecks);
+        fwprintf(f,L"Decision tests: %ls (%d checks)\n",ok?L"PASS":L"FAIL",kTrayCheckCount+flyoutChecks+ddcChecks+audioChecks+acrylicChecks);
         // A bare FAIL across ~200 assertions is unactionable, so name the first one that
         // failed. This is how the slider log-scale bug was pinned down.
         if(!ok&&flyoutFirstFailure[0])fwprintf(f,L"First layout failure: %ls\n",flyoutFirstFailure);
@@ -2927,25 +3475,130 @@ static int SelfTest() {
     }
     return ok?0:1;
 }
+// --acrylic-test: run the real capture/blur/tint pipeline once and report what it did.
+//
+// This exists because the panel is excluded from screen capture while it is open (that exclusion is
+// what lets it read what is behind itself). So the panel cannot be screenshotted to prove the blur
+// works - the pipeline's own output can. It picks the busiest region of the desktop, because
+// blurring a flat wallpaper proves nothing either way.
+static int AcrylicTest() {
+    const int W = 360, H = 520;
+    const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    const int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    RECT best = { vx + 40, vy + 40, vx + 40 + W, vy + 40 + H };
+    if (vw > W && vh > H) {
+        HDC screen = GetDC(nullptr);
+        HDC mem = CreateCompatibleDC(screen);
+        BITMAPINFO bi = {};
+        bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+        bi.bmiHeader.biWidth = vw;
+        bi.bmiHeader.biHeight = -vh;
+        bi.bmiHeader.biPlanes = 1;
+        bi.bmiHeader.biBitCount = 32;
+        bi.bmiHeader.biCompression = BI_RGB;
+        void* bits = nullptr;
+        HBITMAP bmp = CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+        if (bmp && bits) {
+            SelectObject(mem, bmp);
+            BitBlt(mem, 0, 0, vw, vh, screen, vx, vy, SRCCOPY | CAPTUREBLT);            // 128 px blocks of horizontal luminance steps; pick the window that contains the most.
+            const int block = 128;
+            const int bx = (vw + block - 1) / block, by = (vh + block - 1) / block;
+            // Fixed bound rather than std::vector: this project avoids STL, and a 96x48 grid covers
+            // any virtual screen up to 12288x6144.
+            const int kMaxX = 96, kMaxY = 48;
+            if (bx <= kMaxX && by <= kMaxY) {
+                double energy[kMaxX * kMaxY] = { 0 };
+                const BYTE* pixels = (const BYTE*)bits;
+                for (int y = 0; y < vh; y++) {
+                    const BYTE* row = pixels + (size_t)y * vw * 4;
+                    for (int x = 0; x + 1 < vw; x++) {
+                        const int a = (row[x * 4 + 2] * 299 + row[x * 4 + 1] * 587 + row[x * 4 + 0] * 114) / 1000;
+                        const int b = (row[(x + 1) * 4 + 2] * 299 + row[(x + 1) * 4 + 1] * 587 + row[(x + 1) * 4 + 0] * 114) / 1000;
+                        energy[(size_t)(y / block) * bx + (x / block)] += (a > b ? a - b : b - a);
+                    }
+                }
+                double bestScore = -1;
+                const int spanX = W / block, spanY = H / block;
+                for (int by0 = 0; by0 + spanY <= by; by0++) {
+                    for (int bx0 = 0; bx0 + spanX <= bx; bx0++) {
+                        double sum = 0;
+                        for (int j = 0; j < spanY; j++)
+                            for (int i = 0; i < spanX; i++) sum += energy[(size_t)(by0 + j) * bx + (bx0 + i)];
+                        if (sum > bestScore) {
+                            bestScore = sum;
+                            best = RECT{ vx + bx0 * block, vy + by0 * block,
+                                         vx + bx0 * block + W, vy + by0 * block + H };
+                        }
+                    }
+                }
+            }
+        }
+        if (bmp) { SelectObject(mem, nullptr); DeleteObject(bmp); }
+        DeleteDC(mem);
+        ReleaseDC(nullptr, screen);
+    }
+
+    wchar_t artifact[MAX_PATH];
+    swprintf(artifact, MAX_PATH, L"%ls\\acrylic-sample.bmp", folder);
+    acrylic::ProbeStats st = {};
+    const bool ok = acrylic::Probe(best, W, H, artifact, &st);
+    FILE* f = _wfopen(reportFile, L"w, ccs=UTF-8");
+    if (!f) return 2;
+    fwprintf(f, L"Acrylic pipeline test: %ls\nRegion: %ld,%ld  %dx%d\nSharp  : fine %.2f  coarse %.2f  mean %.1f\nBlurred: fine %.2f  coarse %.2f  mean %.1f\nFine detail retained: %.0f%%\nCoarse structure retained: %.0f%%\nArtifact: %ls\n",
+             ok ? L"PASS" : L"FAIL", best.left, best.top, W, H,
+             st.fineBefore, st.coarseBefore, st.meanBefore,
+             st.fineAfter, st.coarseAfter, st.meanAfter,
+             st.fineBefore > 0.01 ? st.fineAfter * 100.0 / st.fineBefore : 0.0,
+             st.coarseBefore > 0.01 ? st.coarseAfter * 100.0 / st.coarseBefore : 0.0,
+             ok ? artifact : L"(not written)");
+    fclose(f);
+    // The point of a blur: kill fine detail, keep the big shapes. A flat fill would drop both.
+    return (ok && st.fineBefore > 0.01 && st.fineAfter < st.fineBefore * 0.5 && st.coarseAfter > st.fineAfter) ? 0 : 1;
+}
+
 static int Diagnose() {
-    int playing=MediaPlaying();
+    // Both signals are measured, not derived: a diagnostic must be able to show the exact case
+    // that motivated the fallback (SMTC empty while the audio stack is rendering).
+    int session=MediaPlaying();
     // A diagnostic-only bounded startup wait; normal operation uses the 30-second timer.
-    for(int i=0;i<100&&playing<0&&SUCCEEDED(mediaError);i++){Sleep(20);playing=MediaPlaying();}
+    for(int i=0;i<100&&session<0&&SUCCEEDED(mediaError);i++){Sleep(20);session=MediaPlaying();}
+    HRESULT audioHr=S_OK;int active=0,total=0;
+    int audioState=audio::AnyActive(&audioHr,&active,&total);
+    int playing=session!=0?session:audioState;
     Saved probe={};HRESULT hr=Capture(probe);
+    // DDC/CI is the path that exists on a desktop, so a diagnostic that cannot see it would
+    // keep reporting a machine as undimmable when it dims perfectly well. Measured values only.
+    ddc::Monitor monitors[ddc::kMaxMonitors];
+    int ddcCount=ddc::Enumerate(monitors,ddc::kMaxMonitors);
     FILE* f=_wfopen(reportFile,L"w, ccs=UTF-8");if(!f)return 2;
-    fwprintf(f,L"Media: %ls\nMedia HRESULT: 0x%08lX\nBrightness HRESULT: 0x%08lX\nInternal panels: %lu\n",playing==1?L"playing":playing==0?L"not playing":L"unavailable",(unsigned long)mediaError,(unsigned long)hr,probe.count);
+    fwprintf(f,L"Media: %ls\nMedia HRESULT: 0x%08lX\nBrightness HRESULT: 0x%08lX\nInternal panels: %lu\n",playing==1?L"playing":playing==2?L"no session, audio rendering":playing==0?L"not playing":L"unavailable",(unsigned long)mediaError,(unsigned long)hr,probe.count);
+    // The two signals are reported apart because they fail apart: an empty SMTC list with audio
+    // rendering is exactly the browser-with-media-keys-off case the fallback exists for.
+    fwprintf(f,L"Media session (SMTC): %ls\nAudio playback (WASAPI): %ls\nAudio sessions: %d active of %d\nAudio HRESULT: 0x%08lX\n",session==1?L"playing":session==0?L"not playing":L"unavailable",audioState==1?L"playing":audioState==0?L"not playing":L"unavailable",active,total,(unsigned long)audioHr);
+    fwprintf(f,L"Protections: media %ls, sound %ls, full screen %ls, off at idle %ls\n",protectMedia?L"on":L"off",protectSound?L"on":L"off",protectFullscreen?L"on":L"off",offInsteadOfDim?L"on":L"off");
     for(DWORD i=0;i<probe.count;i++)fwprintf(f,L"Panel %lu brightness: %u%%\n",i+1,probe.panels[i].brightness);
+    fwprintf(f,L"DDC/CI library: %ls\nDDC monitors: %d\n",ddc::Available()?L"dxva2 loaded":L"dxva2 missing",ddcCount);
+    for(int i=0;i<ddcCount;i++)fwprintf(f,L"Monitor %d \"%ls\": %lu%% (range %lu..%lu)\n",i+1,monitors[i].desc,(unsigned long)monitors[i].current,(unsigned long)monitors[i].min,(unsigned long)monitors[i].max);
+    fwprintf(f,L"Dim path: %ls\n",(probe.count&&ddcCount)?L"WMI internal panel + DDC/CI external monitors":probe.count?L"WMI internal panel only":ddcCount?L"DDC/CI external monitors only":L"none");
     bool light=TaskbarIsLight();int px=TrayIconSize();
     HICON iconProbe=LoadStateIcon(iconDesign,light,px,iconDesign==kDescentDesign?kDescentPreview:L"on");bool iconOk=iconProbe!=nullptr;if(iconProbe)DestroyIcon(iconProbe);
     fwprintf(f,L"Accent resolved: #%06X   (source: %ls)\n",SystemAccent(),g_accentSource);
     fwprintf(f,L"Accent highlight: #%06X  (tile hover swatch; 0 = derived lift)\n",SystemAccentHover());
-    fwprintf(f,L"Full-screen protection active now: %ls\nAutostart: %ls\nIdle threshold: %u minutes\nTray icon design: %d; theme variant: %ls; icon file: %ls; icon size: %d px\n",Fullscreen()?L"yes":L"no",Autostart()?L"on":L"off",idleMs/60000,iconDesign,light?L"onlight":L"ondark",iconOk?L"present":L"MISSING",px);
+    wchar_t offText[64];
+    if(offInsteadOfDim)wcscpy(offText,L"at the idle threshold, no dim");
+    else if(offMinutes)swprintf(offText,64,L"%u minute(s) after dimming",offMinutes);
+    else wcscpy(offText,L"never (dim only)");
+    wchar_t acrylicText2[48];
+    if(!acrylicEnabled)wcscpy(acrylicText2,L"off (flat plate)");
+    else if(acrylicLiveEnabled)wcscpy(acrylicText2,L"live (refreshes while open; excluded from screenshots)");
+    else wcscpy(acrylicText2,L"on (snapshot at open; screenshots work)");
+    fwprintf(f,L"Full-screen protection active now: %ls\nAutostart: %ls\nIdle threshold: %u minutes\nDisplays off: %ls\nLive acrylic: %ls\nTray icon design: %d; theme variant: %ls; icon file: %ls; icon size: %d px\n",Fullscreen()?L"yes":L"no",Autostart()?L"on":L"off",idleMs/60000,offText,acrylicText2,iconDesign,light?L"onlight":L"ondark",iconOk?L"present":L"MISSING",px);
     if(iconDesign==kDescentDesign){
         LASTINPUTINFO input={sizeof(input),0};
         DWORD idle=GetLastInputInfo(&input)?GetTickCount()-input.dwTime:0;
         fwprintf(f,L"Live descent: idle %u s -> frame d%d of %d\n",idle/1000,DescentBucket(idle,idleMs),kDescentSteps);
     }
-    fclose(f);int rc=FAILED(hr)||playing<0?1:0;
+    fclose(f);int rc=(FAILED(hr)&&!ddcCount)||playing<0?1:0;
     return rc;
 }
 // The process must declare real DPI awareness before any window or DC exists, otherwise Windows
@@ -2962,7 +3615,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,wchar_t* command,int) {
     if(desk)SetThreadDesktop(desk);
     DeclareDpiAwareness();
     GetModuleFileNameW(nullptr,exe,MAX_PATH);wcscpy(folder,exe);wchar_t* slash=wcsrchr(folder,L'\\');if(slash)*slash=0;
-    swprintf(ini,MAX_PATH,L"%ls\\settings.ini",folder);swprintf(stateFile,MAX_PATH,L"%ls\\brightness-recovery.bin",folder);swprintf(statsFile,MAX_PATH,L"%ls\\stats.bin",folder);
+    swprintf(ini,MAX_PATH,L"%ls\\settings.ini",folder);swprintf(stateFile,MAX_PATH,L"%ls\\brightness-recovery.bin",folder);swprintf(statsFile,MAX_PATH,L"%ls\\stats.bin",folder);swprintf(ddcFile,MAX_PATH,L"%ls\\ddc-recovery.bin",folder);
     swprintf(reportFile,MAX_PATH,L"%ls\\diagnostics.txt",folder);swprintf(logFile,MAX_PATH,L"%ls\\activity.log",folder);
     // Parse settings.ini once, early: diagnostic commands report the threshold before anything
     // else runs. Read-only here - the healing write happens further down and only on the normal
@@ -2972,6 +3625,12 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,wchar_t* command,int) {
     Settings loaded=settingsPresent?ParseSettings(settingsText):DefaultSettings();
     idleMs=ClampIdleMinutes((long)loaded.idleMinutes)*60000;
     iconDesign=ClampIconDesign((long)loaded.iconDesign);
+    // Assigned here with idleMs/iconDesign, before the CLI dispatch, so --diagnose reports the
+    // configured delay rather than the zero it would read from a not-yet-populated global.
+    offMinutes=ClampOffMinutes((long)loaded.offMinutes);
+    offInsteadOfDim=loaded.offInsteadOfDim;
+    acrylicEnabled=loaded.acrylic;
+    acrylicLiveEnabled=loaded.acrylicLive;
     if(wcsstr(command,L"--quit")){HWND other=FindWindowW(kClass,nullptr);if(other)PostMessageW(other,kQuit,0,0);return 0;}
     if(wcsstr(command,L"--status")){HWND other=FindWindowW(kClass,nullptr);if(other)SendMessageTimeoutW(other,kReport,0,0,SMTO_ABORTIFHUNG,5000,nullptr);return other?0:1;}
     // --menu keeps its name because scripts, README and muscle memory already use it, but it
@@ -2979,7 +3638,10 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,wchar_t* command,int) {
     // "open the panel" are the same request. It posts rather than sends, so the running
     // instance decides where the panel goes rather than the caller.
     if(wcsstr(command,L"--menu")){HWND other=FindWindowW(kClass,nullptr);if(other)PostMessageW(other,kShowPanel,0,0);return other?0:1;}
+    if(wcsstr(command,L"--panel-shot")){HWND panel=FindWindowW(kPanelClass,nullptr);if(panel)SendMessageTimeoutW(panel,kPanelShot,0,0,SMTO_ABORTIFHUNG,8000,nullptr);return panel?0:1;}
+    if(wcsstr(command,L"--acrylic-pause")){HWND panel=FindWindowW(kPanelClass,nullptr);if(panel)SendMessageTimeoutW(panel,kAcrylicPause,0,0,SMTO_ABORTIFHUNG,5000,nullptr);return panel?0:1;}
     if(wcsstr(command,L"--self-test"))return SelfTest();
+    if(wcsstr(command,L"--acrylic-test"))return AcrylicTest();
     HRESULT init=RoInitialize(RO_INIT_SINGLETHREADED);if(FAILED(init))return 2;
     CoInitializeSecurity(nullptr,-1,nullptr,nullptr,RPC_C_AUTHN_LEVEL_DEFAULT,RPC_C_IMP_LEVEL_IMPERSONATE,nullptr,EOAC_NONE,nullptr);
     if(wcsstr(command,L"--diagnose")){
@@ -2993,6 +3655,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,wchar_t* command,int) {
     enabled=loaded.enabled;
     if(wcsstr(command,L"--enable"))enabled=true;
     protectMedia=loaded.protectMedia;
+    protectSound=loaded.protectSound;
     protectFullscreen=loaded.protectFullscreen;
     LoadStats();
     // Heal a non-canonical settings.ini - a UTF-8 BOM, more than one [Settings] section, LF
@@ -3004,9 +3667,17 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,wchar_t* command,int) {
     WNDCLASSW cls={};cls.lpfnWndProc=WndProc;cls.hInstance=instance;cls.lpszClassName=kClass;cls.hIcon=LoadIconW(instance,MAKEINTRESOURCEW(1));RegisterClassW(&cls);
     window=CreateWindowExW(WS_EX_TOOLWINDOW,kClass,L"Idle Dimmer",WS_POPUP,0,0,0,0,nullptr,nullptr,instance,nullptr);
     if(!window){CloseHandle(single);RoUninitialize();return 2;}
+    // Ctrl+Alt+S freezes acrylic for a screenshot. Registering a global hotkey is the only signal a
+    // WS_EX_NOACTIVATE tray app can receive without stealing focus.
+    if(!RegisterHotKey(window,kAcrylicHotkey,MOD_CONTROL|MOD_ALT,'S'))
+        Log(L"Ctrl+Alt+S hotkey unavailable; use --acrylic-pause before screenshotting");
     LoadIcons(); // File-based themed icons; falls back to the procedural design if the files are absent.
     AddTray();WTSRegisterSessionNotification(window,NOTIFY_FOR_THIS_SESSION);
-    if(LoadBrightness()&&!Restore()){enabled=false;ScheduleNext();}
+    // Crash/kill recovery: a dimmed process that died left its saved levels on disk. Either
+    // mechanism's file is enough - Restore() reapplies whichever was written.
+    bool recovered=LoadBrightness();
+    if(LoadDdcBrightness())recovered=true;
+    if(recovered&&!Restore()){enabled=false;ScheduleNext();}
     // No startup media call, deliberately. InitMedia() starts an async WinRT operation that only
     // MediaPlaying() collects, so calling it here left a request outstanding for the whole life of
     // the process whenever media protection was off - and releasing a never-completed operation is
@@ -3018,7 +3689,9 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,wchar_t* command,int) {
     // record of what a process did, not a live status; rewriting history would be the lie.
     ApplyEnabled();Log(L"Native app started; adaptive checks; input notifications only while dimmed");
     if(wcsstr(command,L"--test-brightness")){testExit=true;PostMessageW(window,WM_COMMAND,kDimTest,0);}
-    if(!wcsstr(command,L"--autostart"))Balloon(L"Idle Dimmer is in your tray",L"Click the tray icon to set the idle time, media and full-screen protection, tray icon design, Start with Windows, or Quit.");
+    // First run only: the balloon is a one-time introduction, and showing it on every launch puts a
+    // notification on top of the panel in every screenshot the user takes of it.
+    if(!wcsstr(command,L"--autostart")&&!settingsPresent)Balloon(L"Idle Dimmer is in your tray",L"Click the tray icon to set the idle time, media and full-screen protection, tray icon design, Start with Windows, or Quit.");
     MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){TranslateMessage(&msg);DispatchMessageW(&msg);}
     media.reset();
     mediaOperation.reset();

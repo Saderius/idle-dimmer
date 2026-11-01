@@ -31,7 +31,7 @@ Add-Type -AssemblyName System.Drawing
 $iconDir = Join-Path $PSScriptRoot '..\icons\panel'
 $header = Join-Path $PSScriptRoot '..\PanelIconsData.h'
 $renderSize = 80
-$icons = @('sun','media','full','folder','power','clock','gear','exit','apps','dimnow','dimming','dimmingFilled')
+$icons = @('sun','media','full','folder','power','clock','gear','exit','apps','dimnow','dimming','dimmingFilled','display','sound')
 
 $edge = @(
     (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe'),

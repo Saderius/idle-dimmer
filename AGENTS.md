@@ -126,7 +126,7 @@ in a row means the diagnosis is wrong, not that the fourth guess will land.
 | Memory | generous (100 MB acceptable) | Not the bottleneck |
 | UI | exactly one — the Quick Settings panel | Two front ends drift; there used to be a tray context menu and it caused exactly that |
 | Installer | none needed; single folder + Run key | |
-| Binary | ~202 KB (MEASURED 2026-10-31: 207,360 bytes) | 4x panel icon masks add ~70 KB and the app icon adds ~13 KB; not a hard budget, but worth not regressing |
+| Binary | ~246 KB (MEASURED 2026-11-01: 251,392 bytes) | 4x panel icon masks add ~70 KB and the app icon adds ~13 KB; not a hard budget, but worth not regressing |
 
 ---
 

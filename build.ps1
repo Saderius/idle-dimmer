@@ -59,10 +59,13 @@ if (-not $SkipIconRender) {
 & $compiler cc -x c++ -target x86_64-windows-gnu -std=c++17 -Os -fno-exceptions -fno-rtti -ffunction-sections -fdata-sections '-Wl,--gc-sections' '-Wl,--subsystem,windows' -s -municode @srcs -o (Join-Path $PSScriptRoot 'IdleDimmer.exe') -lole32 -loleaut32 -lwbemuuid -lapi-ms-win-core-winrt-l1-1-0 -lapi-ms-win-core-winrt-string-l1-1-0 -lshell32 -luser32 -lgdi32 -ladvapi32 -lwtsapi32 -ldwmapi
 if ($LASTEXITCODE -ne 0) { throw 'Native build failed' }
 # Embed the tray icon as the executable's main application icon (RT_ICON + RT_GROUP_ICON).
-# Design 4 (bulb and single chevron) is the user's chosen app identity, matching the default
-# tray glyph. It is not design 3 (horizon sun and arrow), which used to be embedded here and
-# looked like a different application in Explorer.
-$mainIco = Join-Path $PSScriptRoot 'icons\tray4-ondark-on.ico'
+# This is design 4 (bulb and single chevron), the user's chosen app identity, but generated from
+# the PLAIN outline SVG rather than the tray's "on" artwork: the on state carries an inset fill
+# (outline + transparent band + body) that merges into one white blob at 16-32 px, and those are
+# the sizes Explorer, Task Manager and Alt+Tab actually draw. tools\build-icons.ps1 -AppOnly
+# generates this file; the full run does too. It is not design 3 (horizon sun and arrow), which
+# used to be embedded here and looked like a different application in Explorer.
+$mainIco = Join-Path $PSScriptRoot 'icons\tray4-app-ondark.ico'
 & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'tools\set-app-icon.ps1') -ExePath (Join-Path $PSScriptRoot 'IdleDimmer.exe') -IcoPath $mainIco
 if ($LASTEXITCODE -ne 0) { throw 'Application icon embedding failed' }
 # Regenerate themed tray icons when the SVG artwork changed (needs Edge; failures keep existing .ico files).

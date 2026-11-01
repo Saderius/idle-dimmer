@@ -101,6 +101,8 @@ $liveTerms = @(
     'build-panel-icons',      # SVG -> 80px alpha PNG -> generated header, run before the compile
     'DimManual',              # manual dimming with 2-second input grace period
     'set-app-icon',           # embeds tray icon as executable's main application icon
+    'Build-AppIcon',          # generates the executable's icon from the plain design-4 outline
+    'tray4-app-ondark.ico',   # the embedded app icon: outline, not the tray's inset-fill "on" state
     'SliderMagnet',           # one-way preset magnet: 2% pull-in, ~1 px release, click never snaps
     'SliderPermilleAtX',      # continuous 1..60 mapping: per-mille avoids collapsing 38/39
     'MinutesToTrackPx'        # linear minute -> pixel position, one rounding step, 59 equal intervals
@@ -123,6 +125,35 @@ $liveTerms = @(
     'FillSliderCapsule'      # supersampled antialiasing for native-style slider surfaces
     'kSliderThumbDiameter'   # fixed outer ring with state-dependent inner disc
     'SPI_GETCLIENTAREAANIMATION' # follows the Windows animation preference
+    'dxva2'                   # DDC/CI brightness for external monitors, loaded by name
+    'DdcBrightness.h'         # the DDC/CI walk and its pure matching logic
+    'SetDdcLevels'            # external-monitor companion to SetLevels
+    'ddc-recovery.bin'        # crash-safety file for the DDC/CI path
+    'FindMonitor'             # description+occurrence key, because all three panels report the same string
+    'Occurrence'              # how the saved list and the live walk agree on which monitor is which
+    'AudioPlayback.h'         # WASAPI fallback for players that publish no media session
+    'IAudioSessionManager2'   # the session walk the fallback runs
+    'AnyActive'               # the fallback's entry point, called only when SMTC is silent
+    'MediaInUse'              # the single decision site: SMTC first, audio fallback second
+    'WASAPI'                  # the API family the fallback reads; docs must name it
+    'SC_MONITORPOWER'         # display standby request: how the displays are switched off
+    'OffDisplays'             # the standby request + the keeps-awake handover
+    'OffMinutes'              # the displays-off delay in settings.ini
+    'StartOffInsteadOfDim'    # the "skip the dim" path; docs must say where the decision happens
+    'OffInsteadOfDim'         # the flag itself, including that it supersedes OffMinutes
+    'Acrylic.h'               # live acrylic: capture, blur, tint, publish as the panel base
+    'WDA_EXCLUDEFROMCAPTURE'  # how the panel reads what is behind itself without feedback
+    '--acrylic-test'          # pipeline self-check with measurable before/after detail
+    '--panel-shot'            # renders the panel to a BMP, the only way to see it as an image
+    '--acrylic-pause'         # freeze the material and clear the exclusion so screenshots work
+    'Ctrl+Alt+S'              # the keyboard form of --acrylic-pause; docs must say how to screenshot
+    'SetThreadDesktop'        # the worker must be on WinSta0\Default or it captures a blank desktop
+    'ProtectSound'            # the Sound switch: audio-rendering protection, separate from Media
+    'hitTileSound'            # the tile that toggles it
+    'hitTileOffMode'          # the tile that toggles "off at idle"
+    'Off at idle'             # the tile caption for the off-instead-of-dim policy
+    '#222222'                 # the bottom ribbon colour on a dark theme, as Windows reports it
+    'DPMS'                    # the standard behind the standby state; docs must explain it
 )
 Write-Host "== 1. live terms documented ==" -ForegroundColor Cyan
 foreach ($t in $liveTerms) {
@@ -212,7 +243,23 @@ $staleClaims = @(
     # A clock-time + compact-age variant of "Last dim" shipped once and was rejected: the user
     # wants a plain minute count. Keep the clock-time wording out of the docs.
     'local clock time plus a compact age',
-    '09:14 (now)'
+    '09:14 (now)',
+    # WMI was the ONLY brightness mechanism until 2026-10-31, so the docs described every dim as
+    # an internal-panel set. On a desktop that meant nothing dimmed at all (0x8004100C,
+    # "Internal panels: 0"). External monitors are dimmed over DDC/CI now; the internal-only
+    # description must not come back as if it were still the whole story.
+    'sets the internal display panel to 0% hardware brightness',
+    # The shipped default tray design was 3 (horizon sun and arrow) while the executable's own
+    # icon was the bulb, so the two identities disagreed out of the box. The default is design 4
+    # now; the sun must not be documented as the default again.
+    'horizonSunOriginal.svg` (default)',
+    # The documented assertion count must not go stale as suites are added. Each superseded
+    # figure is listed so only the current one can appear.
+    'Run 2029 decision-function assertions',
+    'Run 2051 decision-function assertions',
+    'Run 2063 decision-function assertions',
+    'Run 2067 decision-function assertions',
+    'Run 2096 decision-function assertions'
 ) | Select-Object -Unique
 Write-Host "`n== 2. stale claims purged ==" -ForegroundColor Cyan
 foreach ($s in $staleClaims) {

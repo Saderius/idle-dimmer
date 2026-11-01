@@ -1,3 +1,6 @@
+# -AppOnly regenerates just the executable's application icon (see Build-AppIcon). The full run
+# also rebuilds it; the switch exists so a one-artifact change does not rewrite 40 tray files.
+param([switch]$AppOnly)
 $ErrorActionPreference = 'Stop'
 # Build-time tray icon generator: SVG -> alpha mask -> theme/state variants -> multi-size .ico
 # Design ids MUST stay in sync with kIconNames[] in IdleDimmer.cpp.
@@ -186,6 +189,33 @@ function Write-Ico([Drawing.Bitmap[]]$Images, [string]$Path) {
     $bw.Dispose(); $fs.Dispose()
 }
 
+# ---- application icon identity ----
+# The file icon Windows shows for IdleDimmer.exe is fixed at build time and is deliberately NOT
+# the tray's "on" artwork. Design 4's on state carries an inset fill (outer outline, transparent
+# band, inner body); at 16-32 px - exactly the sizes Explorer, Task Manager and Alt+Tab draw - the
+# outline, the band and the body merge into a white blob. MEASURED 2026-10-31 by extracting the
+# embedded 16 px frame from IdleDimmer.exe: the glyph read as one solid shape, and the design's
+# own SVG (a single-stroke bulb plus chevron) read as a ring over a chevron at the same size.
+# So the application icon is generated from the plain SVG with the "on" tint of each theme.
+function Build-AppIcon {
+    $appSvg = Join-Path $here 'tray-dimmer-pick4SingleChevron.svg'
+    if (-not (Test-Path $appSvg)) { Write-Warning "missing $appSvg"; return }
+    $appMask = Refit-Mask (Get-AlphaMask (Get-Screenshot $appSvg $renderSize))
+    foreach ($theme in @('ondark','onlight')) {
+        $images = @()
+        foreach ($s in $sizes) {
+            $img = Scale-Mask $appMask $s
+            Set-Tint $img $palette[$theme]['on'] | Out-Null
+            $images += $img
+        }
+        Write-Ico $images (Join-Path $here ("tray4-app-{0}.ico" -f $theme))
+    }
+    $appMask.Dispose()
+    Write-Output 'built the application icon from the plain design-4 outline'
+}
+
+if ($AppOnly) { Build-AppIcon; return }
+
 # ---- main ----
 $built = @{}
 foreach ($d in $designs) {
@@ -224,6 +254,7 @@ foreach ($d in $designs) {
     foreach ($m in $masks.Values) { $m.Dispose() }
     Write-Output ("built design {0} from {1} state(s)" -f $d.Id, $svgFor.Count)
 }
+Build-AppIcon
 
 # Verification sheet: every design x theme x state at 48 px, plus a true-size tray strip.
 # The 48 px row shows the artwork; the strip below shows the only size that actually

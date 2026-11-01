@@ -305,7 +305,8 @@ inline int Sc(int logical, int dpi) {
 // the DWM backdrop silently degrades (Transparency effects off, or an OS without attr 38).
 struct Palette {
     Color base,      tileOff,  tileHover, tileBorder, divider, text, textDim,
-           thumb,    track,     tick,      pillBg,    pillText, onAccent;
+           thumb,    track,     tick,      pillBg,    pillText, onAccent, dock,
+           cardFill, cardEdge;
 };
 
 Palette MakePalette(bool dark, Color accent) {
@@ -326,6 +327,15 @@ Palette MakePalette(bool dark, Color accent) {
             Color{ 41, accent.r, accent.g, accent.b },  // pillBg
             accent,                      // pillText
             onAcc,                       // onAccent
+            // The bottom ribbon. #222222 is what Windows' own Quick Settings ribbon reports on a
+            // dark theme (reported by the user 2026-11-01, not derived from the base colour): the
+            // dock is a darker plate than the #2C2C2C panel, not a translucent tint over it.
+            RGBc(0x22, 0x22, 0x22),       // dock
+            // Power dashboard card. Fluent's CardBackgroundFillColorDefault / CardStrokeColorDefault,
+            // not an accent wash: the card is a neutral white film over whatever is behind it, which
+            // is what makes it read as "lighter than the panel" over acrylic.
+            RGBc(0xFF, 0xFF, 0xFF, 13),   // cardFill  #0DFFFFFF (white 5%)
+            RGBc(0x00, 0x00, 0x00, 25),   // cardEdge  #19000000 (black 10%)
         };
     }
     return Palette{
@@ -342,6 +352,13 @@ Palette MakePalette(bool dark, Color accent) {
         Color{ 26, accent.r, accent.g, accent.b },  // pillBg
         accent,                      // pillText
         onAcc,                       // onAccent
+        // Light-theme ribbon. The dark value is the one Windows reports (#222222); this lighter
+        // plate comes from the design sheet's light acrylic token (rgba(249,249,249)), which is the
+        // closest thing to a measured source available here. UNVERIFIED on a light taskbar.
+        RGBc(0xF9, 0xF9, 0xF9),      // dock
+        // Light theme uses the opposite film: a near-opaque white card with a faint dark edge.
+        RGBc(0xFF, 0xFF, 0xFF, 179), // cardFill  #B3FFFFFF (white 70%)
+        RGBc(0x00, 0x00, 0x00, 15),  // cardEdge  #0F000000 (black 6%)
     };
 }
 
@@ -536,9 +553,9 @@ void FillSliderCapsule(BYTE* base, int w, int h, Rect r, Color c) {
 // measured on verify-panel.png, a 30x30 crop of each tile glyph contained exactly two
 // colours, i.e. no antialiasing at all. Do not reintroduce direct integer line drawing
 // for icons (AGENTS.md section 10).
-enum Glyph { gDim, gDimFilled, gMedia, gFullscreen, gIcon, gPower, gFolder, gSun, gClock, gDimNow, gGear, gExit };
+enum Glyph { gDim, gDimFilled, gMedia, gFullscreen, gIcon, gPower, gFolder, gSun, gClock, gDimNow, gGear, gExit, gDisplay, gSound };
 
-enum MaskIndex { miSun, miMedia, miFull, miFolder, miPower, miClock, miGear, miExit, miApps, miDimNow, miDimming, miDimmingFilled, miCount };
+enum MaskIndex { miSun, miMedia, miFull, miFolder, miPower, miClock, miGear, miExit, miApps, miDimNow, miDimming, miDimmingFilled, miDisplay, miSound, miCount };
 static_assert(sizeof(panelicons::kMasks) / sizeof(panelicons::kMasks[0]) == miCount,
               "PanelIconsData.h and MaskIndex are out of sync");
 
@@ -555,6 +572,8 @@ const panelicons::Mask& MaskFor(Glyph g) {
     case gClock:     return panelicons::kMasks[miClock];
     case gGear:      return panelicons::kMasks[miGear];
     case gExit:      return panelicons::kMasks[miExit];
+    case gDisplay:   return panelicons::kMasks[miDisplay];
+    case gSound:     return panelicons::kMasks[miSound];
     case gIcon:      return panelicons::kMasks[miApps];
     }
     return panelicons::kMasks[miSun];
@@ -634,24 +653,36 @@ struct Row {
     int target[6];
 };
 
+// One table for "which control is tile N", used by both the painter's model and the hit test.
+// Two copies of this mapping is exactly the drift that makes a click toggle its neighbour.
+static int TileTargetForIndex(int index) {
+    switch (index) {
+    case 0: return hitTileDimming;
+    case 1: return hitTileMedia;
+    case 2: return hitTileSound;
+    case 3: return hitTileFullscreen;
+    case 4: return hitTileOffMode;
+    case 5: return hitTileAutostart;
+    default: return hitNone;
+    }
+}
+
 Row BuildRows(const PanelState& s) {
     Row r = {};
-    int count = s.buttonCount > 0 ? s.buttonCount : 4;
+    int count = s.buttonCount > 0 ? s.buttonCount : 6;
     if (count > 6) count = 6;
     r.count = count;
 
-    r.tileOn[0] = s.enabled;          r.tileCaption[0] = L"Dimming";        r.tileGlyph[0] = s.enabled ? gDimFilled : gDim; r.target[0] = hitTileDimming;
-    r.tileOn[1] = s.mediaGuard;       r.tileCaption[1] = L"Media";          r.tileGlyph[1] = gMedia;      r.target[1] = hitTileMedia;
-    r.tileOn[2] = s.fullscreenGuard;  r.tileCaption[2] = L"Full screen";    r.tileGlyph[2] = gFullscreen; r.target[2] = hitTileFullscreen;
-    r.tileOn[3] = s.autostart;        r.tileCaption[3] = L"Start at login"; r.tileGlyph[3] = gPower;      r.target[3] = hitTileAutostart;
-    if (count >= 5) {
-        r.tileOn[4] = false;          r.tileCaption[4] = (count >= 6) ? L"Icon picker" : L"Folder";
-        r.tileGlyph[4] = (count >= 6) ? gIcon : gFolder;
-        r.target[4] = (count >= 6) ? hitTileIcon : hitTileFolder;
-    }
-    if (count >= 6) {
-        r.tileOn[5] = false;          r.tileCaption[5] = L"Folder";         r.tileGlyph[5] = gFolder;     r.target[5] = hitTileFolder;
-    }
+    // Prefix order, so a shorter count is just the first N of the same list. The four protections
+    // come first because they answer the same question ("when must we not go dark"), then the
+    // displays-off policy, then the login toggle.
+    r.tileOn[0] = s.enabled;          r.tileCaption[0] = L"Dimming";        r.tileGlyph[0] = s.enabled ? gDimFilled : gDim;
+    r.tileOn[1] = s.mediaGuard;       r.tileCaption[1] = L"Media";          r.tileGlyph[1] = gMedia;
+    r.tileOn[2] = s.soundGuard;       r.tileCaption[2] = L"Sound";          r.tileGlyph[2] = gSound;
+    r.tileOn[3] = s.fullscreenGuard;  r.tileCaption[3] = L"Full screen";    r.tileGlyph[3] = gFullscreen;
+    r.tileOn[4] = s.offMode;          r.tileCaption[4] = L"Off at idle";    r.tileGlyph[4] = gDisplay;
+    r.tileOn[5] = s.autostart;        r.tileCaption[5] = L"Start at login"; r.tileGlyph[5] = gPower;
+    for (int i = 0; i < count; i++) r.target[i] = TileTargetForIndex(i);
     return r;
 }
 
@@ -663,8 +694,13 @@ void Mmss(int seconds, wchar_t* out, int cap) {
 
 }  // namespace
 
-void PaintPanel(HDC dc, int widthPx, int heightPx, const PanelState& state, int dpi) {
-    if (dpi <= 0) dpi = 96;
+// Live acrylic frames arrive as an HBITMAP from Acrylic.cpp; the painter needs its size to stretch
+// it onto the surface. A failed read returns 0, which makes StretchBlt fail and the painter fall
+// back to the flat base colour rather than drawing nothing.
+static int BackdropWidth(HBITMAP bmp) { BITMAP bm = {}; return bmp && GetObject(bmp, sizeof(bm), &bm) ? bm.bmWidth : 0; }
+static int BackdropHeight(HBITMAP bmp) { BITMAP bm = {}; return bmp && GetObject(bmp, sizeof(bm), &bm) ? bm.bmHeight : 0; }
+
+void PaintPanel(HDC dc, int widthPx, int heightPx, const PanelState& state, int dpi, HBITMAP backdrop) {    if (dpi <= 0) dpi = 96;
     Color acc = RGBc((BYTE)((state.accent>>16)&0xFF),(BYTE)((state.accent>>8)&0xFF),(BYTE)(state.accent&0xFF));
     // The highlight swatch (AccentPalette[0]) is a separate colour, not a per-channel lift: on this
     // machine the ramp steps from #D4BB8B to #ECDCAA, a (+24,+33,+31) difference that a flat lift
@@ -716,7 +752,22 @@ void PaintPanel(HDC dc, int widthPx, int heightPx, const PanelState& state, int 
     HGDIOBJ prevBmp = SelectObject(paint, tmp);
     // ---- 1. opaque base. Painted FIRST and fully, so the panel is legible even when the
     //         DWM backdrop is unavailable (attr 38 absent, or Transparency effects off).
-    FillBlend(paint, base, widthPx, heightPx, 0, 0, widthPx, heightPx, p.base);
+    //         When a live acrylic frame is supplied it becomes the base instead: the blur module
+    //         has already blended the panel tint into it, so the rest of the painter (tiles,
+    //         dividers, text) composes exactly as before and nothing here needs alpha.
+    bool paintedBackdrop = false;
+    if (backdrop) {
+        HDC src = CreateCompatibleDC(paint);
+        HGDIOBJ prevSrc = SelectObject(src, backdrop);
+        SetStretchBltMode(paint, HALFTONE);
+        SetBrushOrgEx(paint, 0, 0, nullptr);
+        paintedBackdrop = StretchBlt(paint, 0, 0, widthPx, heightPx, src, 0, 0,
+                                     BackdropWidth(backdrop), BackdropHeight(backdrop), SRCCOPY) != FALSE;
+        SelectObject(src, prevSrc);
+        DeleteDC(src);
+    }
+    if (!paintedBackdrop)
+        FillBlend(paint, base, widthPx, heightPx, 0, 0, widthPx, heightPx, p.base);
 
     const int padX = Sc(kPanelPadX, dpi);
 
@@ -817,8 +868,13 @@ void PaintPanel(HDC dc, int widthPx, int heightPx, const PanelState& state, int 
     // ---- 7. power dashboard card.
     {
         const Rect card = PowerCardRect(dpi, totalButtons);
-        const Color cardFill{ 20, p.thumb.r, p.thumb.g, p.thumb.b };   // accent at 8 %
-        const Color cardEdge{ 51, p.thumb.r, p.thumb.g, p.thumb.b };   // accent at 20 %
+        // Card = Fluent's CardBackgroundFillColorDefault over whatever is behind it (the acrylic, or
+        // the flat plate when the material is off), framed by CardStrokeColorDefault. It used to be
+        // the accent at 8 %, which stained a third of the panel with the user's accent colour - a
+        // warm/brown card over a gold accent, and never what Windows paints. Kept on 2026-11-01
+        // when the user rejected the tint change and asked to keep this build.
+        const Color cardFill = p.cardFill;
+        const Color cardEdge = p.cardEdge;
         FillRound(paint, base, widthPx, heightPx, card, Sc(kCardRadius, dpi), cardFill);
         StrokeRound(paint, base, widthPx, heightPx, card, Sc(kCardRadius, dpi), cardEdge);
 
@@ -870,13 +926,19 @@ void PaintPanel(HDC dc, int widthPx, int heightPx, const PanelState& state, int 
 
     const int footY = Sc(FooterY(totalButtons), dpi);
     const int footH = Sc(kFooterHeight, dpi);
-    // Distinct bottom dock bar: subtle shaded background separating dock from upper panel
-    Color dockBg = state.dark ? RGBc(0xFF, 0xFF, 0xFF, 8) : RGBc(0x00, 0x00, 0x00, 6);
-    FillBlend(paint, base, widthPx, heightPx, 0, footY, widthPx, footH, dockBg);
+    // Bottom dock bar. Over the material there is **no** plate at all: the divider above it is what
+    // separates the footer in Windows, and the footer keeps the toolbar's own acrylic untouched. A
+    // white veil used to sit here (14/255, after 18/255 and 9/255 before it) and it always read as a
+    // lighter band - the user's "ribbon too light" report. Without the material there is nothing to
+    // keep, so the flat plate uses the measured #222222 dock colour. Kept on 2026-11-01.
+    if (!paintedBackdrop) {
+        FillBlend(paint, base, widthPx, heightPx, 0, footY, widthPx, footH, p.dock);
+    }
 
     const Rect exitBtn = FooterExitRect(dpi, totalButtons);
     const Rect dimBtn = DimNowRect(dpi, totalButtons);
-    const int statW = dimBtn.x - padX - Sc(8, dpi);
+    const Rect offBtn = DisplaysOffRect(dpi, totalButtons);
+    const int statW = offBtn.x - padX - Sc(8, dpi);
 
     // App name above a smaller version hint, in the former uptime line's position.
     DrawTextA(paint, base, widthPx, heightPx, L"Idle Dimmer",
@@ -896,6 +958,7 @@ void PaintPanel(HDC dc, int widthPx, int heightPx, const PanelState& state, int 
         DrawGlyph(paint, base, widthPx, heightPx, g, r.x + r.w / 2, r.y + r.h / 2, fg, dpi, 15);
     };
     IconButton(dimBtn, hitDimNow, gDimNow, p.text);
+    IconButton(offBtn, hitDisplaysOff, gDisplay, p.text);
     IconButton(exitBtn, hitFooterExit, gExit, p.textDim);
 
     // GDI cannot alpha-blend text into a DIB, and its failure mode is worse than a wrong
@@ -948,6 +1011,11 @@ Rect DimNowRect(int dpi, int buttonCount) {
     return FooterButton(kFooterBtnW + kFooterGap, dpi, buttonCount);
 }
 
+// Left of dim-now, so the dock keeps Exit at the right edge: [displays off][dim now][exit].
+Rect DisplaysOffRect(int dpi, int buttonCount) {
+    return FooterButton((kFooterBtnW + kFooterGap) * 2, dpi, buttonCount);
+}
+
 Rect FooterExitRect(int dpi, int buttonCount) {
     return FooterButton(0, dpi, buttonCount);
 }
@@ -963,15 +1031,10 @@ static int HitTestImpl(int x, int y, int dpi, int totalButtons, bool tileBodyOnl
                         ? t
                         : Rect{ t.x, t.y, t.w, t.h + S(kCaptionH, dpi) + S(kCaptionGap, dpi) };
         if (area.Contains(x, y)) {
-            switch (i) {
-            case 0: return hitTileDimming;
-            case 1: return hitTileMedia;
-            case 2: return hitTileFullscreen;
-            case 3: return hitTileAutostart;
-            case 4: return (totalButtons >= 6) ? hitTileIcon : hitTileFolder;
-            case 5: return hitTileFolder;
-            default: return hitTileDimming;
-            }
+            // Same table the painter used to build the row, so a tile cannot be drawn as one
+            // control and hit-tested as another.
+            const int target = TileTargetForIndex(i);
+            return target != hitNone ? target : hitTileDimming;
         }
     }
     // Keep the generous grab area around the thinner track and smaller native-style thumb.
@@ -982,6 +1045,7 @@ static int HitTestImpl(int x, int y, int dpi, int totalButtons, bool tileBodyOnl
         if (grab.Contains(x, y)) return hitSliderTrack;
     }
     if (DimNowRect(dpi, totalButtons).Contains(x, y)) return hitDimNow;
+    if (DisplaysOffRect(dpi, totalButtons).Contains(x, y)) return hitDisplaysOff;
     if (FooterExitRect(dpi, totalButtons).Contains(x, y)) return hitFooterExit;
     return hitNone;
 }

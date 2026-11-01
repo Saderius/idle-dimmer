@@ -163,8 +163,10 @@ struct PanelState {
     bool dark;               // follow the taskbar theme
     bool enabled;            // master switch
     bool dimmed;             // screen is at 0% right now
-    bool mediaGuard;         // "pause while media plays"
+    bool mediaGuard;         // "pause while media plays" (Windows media sessions, SMTC)
+    bool soundGuard;         // "pause while any app renders audio" (WASAPI fallback)
     bool fullscreenGuard;    // "pause for full-screen apps"
+    bool offMode;            // "displays off at the idle threshold instead of dimming"
     bool autostart;          // Run key present
     int minutes;             // idle threshold, 1..60
     int idleSec;             // seconds since last input
@@ -215,7 +217,7 @@ constexpr Color onAccentLight(){ return RGBc(0xFF, 0xFF, 0xFF); }
 // metric. The caller owns the DC setup (font, text colour, background mode); PaintPanel
 // sets those itself and restores nothing, because the only callers are the panel window
 // and the headless renderer, and each creates a fresh DC per paint.
-void PaintPanel(HDC dc, int widthPx, int heightPx, const PanelState& state, int dpi);
+void PaintPanel(HDC dc, int widthPx, int heightPx, const PanelState& state, int dpi, HBITMAP backdrop = nullptr);
 // Screen-rect point containment, used by the WH_MOUSE_LL click-away hook in IdleDimmer.cpp.
 // Deliberately the Win32 half-open convention: left/top inclusive, right/bottom exclusive, so
 // two abutting rects never both claim a point and a click exactly on the window border belongs
@@ -234,9 +236,9 @@ static inline bool RectContainsPoint(RECT r, POINT p) {
 // the app's persistence and side effects rather than duplicating them.
 enum HitTarget {
     hitNone = 0,
-    hitTileDimming, hitTileMedia, hitTileFullscreen,
+    hitTileDimming, hitTileMedia, hitTileSound, hitTileFullscreen, hitTileOffMode,
     hitTileIcon, hitTileAutostart, hitTileFolder,
-    hitSliderTrack, hitDimNow, hitFooterGear, hitFooterExit,
+    hitSliderTrack, hitDimNow, hitFooterGear, hitDisplaysOff, hitFooterExit,
 };
 
 // Click geometry: a tile owns its caption too, so the label toggles the control the box does -
@@ -255,4 +257,7 @@ int SliderPermilleAtX(int x, int dpi);
 
 // Controls outside the tile grid.
 Rect DimNowRect(int dpi, int buttonCount = 4);
+// The third footer button: turn the displays off now. Sits left of dim-now, so the rightmost
+// control is still Exit and the dock reads dim-now, displays-off, exit.
+Rect DisplaysOffRect(int dpi, int buttonCount = 4);
 Rect FooterExitRect(int dpi, int buttonCount = 4);
