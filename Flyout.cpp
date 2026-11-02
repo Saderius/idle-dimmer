@@ -1,6 +1,7 @@
 // Pure layout geometry for the flyout panel. See Flyout.h for why this is separated out
 // and free of window state.
 #include "Flyout.h"
+#include "AppVersion.h"
 #include <windows.h>
 
 namespace {
@@ -947,7 +948,7 @@ void PaintPanel(HDC dc, int widthPx, int heightPx, const PanelState& state, int 
     DrawTextA(paint, base, widthPx, heightPx, L"Idle Dimmer",
               Rect{ padX, footY + Sc(11, dpi), statW, Sc(15, dpi) },
               p.text, p.base, FW_SEMIBOLD, Sc(12, dpi), DT_LEFT);
-    DrawTextA(paint, base, widthPx, heightPx, L"v1.0.1",
+    DrawTextA(paint, base, widthPx, heightPx, IDLE_DIMMER_VERSION_LABEL,
               Rect{ padX, footY + Sc(28, dpi), statW, Sc(13, dpi) },
               Mix(p.textDim, p.base), p.base, FW_NORMAL, Sc(10, dpi), DT_LEFT);
 

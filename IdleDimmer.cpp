@@ -1449,6 +1449,19 @@ static void DimManual() {
 }
 static bool panelDragging=false;
 static SliderMagnet panelSliderMagnet={};
+static int panelWheelRemainder=0;
+// The entire slider row, including its clock and value, accepts wheel input.
+// The live panel has six tiles (the same layout used by CurrentPanelState).
+static bool PanelSliderWheelContains(POINT screenPoint) {
+    if(!panelWindow||!IsWindowVisible(panelWindow)||panelOpening||panelEntering||
+       panelExiting||panelDragging)return false;
+    if(!ScreenToClient(panelWindow,&screenPoint))return false;
+    const int dpi=panelDpi(panelWindow);
+    const int center=SliderTrackRect(dpi,6).y;
+    const Rect row={MulDiv(kPanelPadX,dpi,96),center-MulDiv(kSliderHeight/2,dpi,96),
+                   MulDiv(kPanelWidth-kPanelPadX*2,dpi,96),MulDiv(kSliderHeight,dpi,96)};
+    return row.Contains(screenPoint.x,screenPoint.y);
+}
 static void ActivatePanelTarget(int hit) {
     switch(hit){
     case hitTileDimming:  enabled=!enabled;ApplyEnabled();break;
@@ -1511,8 +1524,17 @@ static void ActivatePanelTarget(int hit) {
 // also format a string and open, append to and close a file on every outside click; that is
 // exactly the kind of unbounded latency inside a low-level hook that Windows answers by
 // silently removing the hook with no error anywhere, which presents as "click-away quietly
-// stopped working". The hook is now the smallest thing that can still do its job.
+// stopped working". Wheel input over the slider is also posted to our message loop: this
+// non-activating window must not depend on the OS inactive-window scrolling preference.
+// Only a successfully queued slider wheel event is consumed, preventing delivery twice
+// or scrolling the foreground app. Settings writes and painting stay outside this hook.
 static LRESULT CALLBACK PanelMouseHook(int code, WPARAM wp, LPARAM lp) {
+    if(code==HC_ACTION&&wp==WM_MOUSEWHEEL){
+        const MSLLHOOKSTRUCT* hs=reinterpret_cast<const MSLLHOOKSTRUCT*>(lp);
+        if(PanelSliderWheelContains(hs->pt)&&WindowFromPoint(hs->pt)==panelWindow&&
+           PostMessage(panelWindow,WM_MOUSEWHEEL,(WPARAM)(hs->mouseData&0xffff0000u),
+                       MAKELPARAM(hs->pt.x,hs->pt.y)))return 1;
+    }
     if(code==HC_ACTION&&(wp==WM_LBUTTONDOWN||wp==WM_RBUTTONDOWN||wp==WM_MBUTTONDOWN)){
         const MSLLHOOKSTRUCT* hs=reinterpret_cast<const MSLLHOOKSTRUCT*>(lp);
         POINT pt={hs->pt.x,hs->pt.y};
@@ -1547,6 +1569,7 @@ static bool ForegroundIsCaptureTool() {
 }
 
 static void HidePanel(bool clearTrayPair) {
+    panelWheelRemainder=0;
     if(!panelWindow){panelOpening=false;return;}
     // Live acrylic ends with the panel: the capture thread exits and the exclusion is cleared, so
     // nothing is running (and nothing is hidden from screenshots) while the UI is absent.
@@ -1650,7 +1673,7 @@ static LRESULT CALLBACK PanelProc(HWND h,UINT msg,WPARAM wp,LPARAM lp) {
     // Wait for the moving window to settle before interpreting control hits.
     // Tray and click-away dismissal stay available during the entrance.
     if((panelExiting||panelOpening||(panelEntering&&nativebackdrop::Running()))&&
-       (msg==WM_LBUTTONDOWN||msg==WM_LBUTTONUP||msg==WM_MOUSEMOVE))return 0;
+       (msg==WM_LBUTTONDOWN||msg==WM_LBUTTONUP||msg==WM_MOUSEMOVE||msg==WM_MOUSEWHEEL))return 0;
     switch(msg){
     case nativebackdrop::kAnimationUpdateMessage: {
         const unsigned session=(unsigned)(wp>>1);
@@ -1806,7 +1829,23 @@ static LRESULT CALLBACK PanelProc(HWND h,UINT msg,WPARAM wp,LPARAM lp) {
     // ---- mouse ----------------------------------------------------------------
     // Controls are driven directly rather than via focus, so hit testing works regardless of
     // which window holds the caret - the panel is WS_EX_NOACTIVATE and never takes it.
+    case WM_MOUSEWHEEL: {
+        const POINT pt={GET_X_LPARAM(lp),GET_Y_LPARAM(lp)};
+        if(!PanelSliderWheelContains(pt)){panelWheelRemainder=0;return 0;}
+        panelWheelRemainder+=GET_WHEEL_DELTA_WPARAM(wp);
+        const int steps=panelWheelRemainder/WHEEL_DELTA;
+        panelWheelRemainder%=WHEEL_DELTA;
+        const DWORD previous=idleMs;
+        ApplyThreshold((int)(idleMs/60000)+steps);
+        if(idleMs!=previous){
+            SaveSettings();
+            if(enabled)Check();
+            InvalidateRect(h,nullptr,FALSE);
+        }
+        return 0;
+    }
     case WM_LBUTTONDOWN: {
+        panelWheelRemainder=0;
         PanelState s;CurrentPanelState(s);
         int bc=s.buttonCount>0?s.buttonCount:4;
         int hit=HitTest((int)(short)lp,(int)(short)(lp>>16),panelDpi(h),bc);
@@ -1874,6 +1913,7 @@ static LRESULT CALLBACK PanelProc(HWND h,UINT msg,WPARAM wp,LPARAM lp) {
         return 0;
     }
     case WM_MOUSELEAVE:
+        panelWheelRemainder=0;
         panelHover=hitNone;
         InvalidateRect(h,nullptr,FALSE);
         return 0;

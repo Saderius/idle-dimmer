@@ -1,0 +1,90 @@
+name: Prepare release
+
+# Releases are deliberate. Ordinary commits and PRs only run build.yml.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version in AppVersion.h, without v (for example 1.0.1)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate version and release history
+        shell: pwsh
+        run: |
+          ./tools/prepare-release.ps1 -Version $env:RELEASE_VERSION -ValidateOnly
+          $tag = "v$env:RELEASE_VERSION"
+          $existingTag = git tag --list $tag
+          if ($existingTag) { throw "Tag $tag already exists. Choose a new version; existing releases are never overwritten." }
+          $previous = gh api "repos/$env:GH_REPO/releases?per_page=100" --jq '[.[] | select(.draft == false and .prerelease == false)][0].tag_name // ""'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read release history' }
+          $previous = ($previous | Out-String).Trim()
+          if ($previous -and $previous -match '^v(\d+\.\d+\.\d+)$' -and [version]$env:RELEASE_VERSION -le [version]$Matches[1]) {
+            throw "Version must be newer than $previous"
+          }
+          "PREVIOUS_RELEASE=$previous" >> $env:GITHUB_ENV
+
+      - name: Build
+        shell: pwsh
+        run: ./build.ps1 -SkipIconRender -NoRun
+
+      - name: Self-test
+        shell: pwsh
+        run: |
+          $p = Start-Process ./IdleDimmer.exe -ArgumentList '--self-test' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Self-test exited $($p.ExitCode)" }
+          Get-Content diagnostics.txt
+          if (-not (Select-String -Path diagnostics.txt -Pattern '^Decision tests: PASS \([0-9]+ checks\)$')) {
+            throw 'Self-test did not report PASS'
+          }
+
+      - name: Package and generate notes
+        shell: pwsh
+        run: ./tools/prepare-release.ps1 -Version $env:RELEASE_VERSION -PreviousTag $env:PREVIOUS_RELEASE
+
+      - name: Preserve release package
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ inputs.version }}
+          path: build-tools/release/*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Create draft release
+        shell: pwsh
+        run: |
+          $tag = "v$env:RELEASE_VERSION"
+          $releaseArgs = @('release', 'create', $tag,
+            './build-tools/release/IdleDimmer.exe',
+            "./build-tools/release/IdleDimmer-$env:RELEASE_VERSION-windows-x64.zip",
+            './build-tools/release/SHA256SUMS.txt',
+            '--target', $env:GITHUB_SHA, '--draft', '--title', "Idle Dimmer $env:RELEASE_VERSION",
+            '--notes-file', './build-tools/release/release-notes.md', '--generate-notes')
+          if ($env:PREVIOUS_RELEASE) { $releaseArgs += @('--notes-start-tag', $env:PREVIOUS_RELEASE) }
+          $releaseUrl = & gh @releaseArgs
+          if ($LASTEXITCODE -ne 0) { throw 'Draft release creation failed' }
+          "## Draft release ready`n`n$releaseUrl`n`nReview the notes and assets, then publish from GitHub Releases. No existing release was overwritten." >> $env:GITHUB_STEP_SUMMARY

@@ -2,7 +2,7 @@
 
 *Created 2026-10-14*
 
-Technical documentation of the current Win32 implementation in `IdleDimmer.cpp` and `NativeBackdrop.cpp` (MEASURED 2026-11-02, post-review build: 286,208 bytes; general manual off/wake user-confirmed). Companion to [README.md](README.md), which covers usage. Historical observations and remaining verification limits are marked.
+Technical documentation of the current Win32 implementation in `IdleDimmer.cpp` and `NativeBackdrop.cpp` (MEASURED 2026-11-02, slider-wheel build: 286,720 bytes; general manual off/wake user-confirmed in the preceding build, wheel interaction UNVERIFIED). Companion to [README.md](README.md), which covers usage. Historical observations and remaining verification limits are marked.
 
 ## 1. Purpose and design goals
 
@@ -21,7 +21,7 @@ Priority order for all decisions:
 | Compiler | Bundled Zig `cc` (`build-tools\zig-x86_64-windows-0.15.2`), invoked by `build.ps1` |
 | Flags | `-Os -fno-exceptions -fno-rtti -ffunction-sections -fdata-sections -Wl,--gc-sections -Wl,--subsystem,windows -s -municode` |
 | Linked | ole32, oleaut32, wbemuuid, winrt (l1-1-0, string), shell32, user32, gdi32, advapi32, wtsapi32, dwmapi, d3d11, dxgi, windowscodecs, uuid |
-| Output | `IdleDimmer.exe`, ~280 KB (MEASURED 2026-11-02, post-review build: 286,208 bytes; temporary power logging removed) |
+| Output | `IdleDimmer.exe`, ~280 KB (MEASURED 2026-11-02, slider-wheel build: 286,720 bytes; temporary power logging removed) |
 | Runtime deps | OS DLLs only (no VC runtime, no .NET, no Electron). `dxva2.dll` is resolved by name at first use, never linked |
 
 The build also runs `tools\build-panel-icons.ps1` before compiling: it rasterizes
@@ -37,6 +37,21 @@ relaunches it after a successful build. A machine with nothing running, such as 
 this. `MEASURED 2026-10-31`: without the guard the build fails in under a second with that message.
 
 ## 3. Process model
+
+### Release preparation (UNVERIFIED 2026-11-02 on GitHub)
+
+`AppVersion.h` defines `IDLE_DIMMER_VERSION`, shared by the footer and
+`tools/prepare-release.ps1`. The packaging script checks the requested version and
+README, creates a ZIP from only the EXE and licence, hashes the EXE and ZIP, and
+generates notes from optional highlights plus the previous release's commit range.
+Dirty local packages require `-AllowDirty` and carry a preview warning.
+The manually dispatched `.github/workflows/release.yml` builds and self-tests an exact
+`main` commit before creating a draft. Existing versions are not overwritten and
+ordinary commits do not publish releases. GitHub-generated PR notes are appended to
+the complete direct-commit list. See [the release guide](docs/RELEASING.md).
+This adds no app update checker or background network work; that phase is deferred.
+
+### Running application
 
 - **Single instance**: named mutex `Local\IdleDimmerNative`. A second invocation forwards CLI commands (`--enable`, `--quit`, `--status`, `--menu`) to the running instance and exits.
 - **Hidden window**: a `WS_EX_TOOLWINDOW | WS_POPUP` 0×0 window (class `IdleDimmerNativeWindow`) owns the tray icon, timers, raw input, and all messages. It is never shown.
@@ -593,6 +608,20 @@ toward it holds; moving away releases after `SliderReleasePermille(track width)`
 physical pixel — measured from the closest point reached, so a wide pull-in zone never becomes a
 wide sticky zone. A fast drag that jumps past a preset is not captured. 39 minutes is outside the
 30- and 60-minute pull-in zones and remains selectable by dragging through or clicking it.
+
+**Mouse-wheel timeout adjustment — UNVERIFIED 2026-11-02, pending user audit:**
+`PanelSliderWheelContains` covers the slider row, including the clock and minute label.
+The existing visible-only `PanelMouseHook` posts `WM_MOUSEWHEEL` to the panel when the
+pointer is over that row and the panel is the window under the pointer. A successfully
+queued event is consumed so it cannot also scroll the foreground application or adjust
+the slider twice. This works without activating the flyout or relying on Windows' inactive
+window scrolling setting. The hook does no painting or settings I/O.
+The source-defined step is one minute per `WHEEL_DELTA`; positive scroll increases the
+timeout and negative scroll decreases it, clamped to the existing allowed range.
+`panelWheelRemainder` accumulates smaller deltas and resets on mouse leave, click, or hide.
+Wheel input is ignored during animation and dragging. A changed value uses `ApplyThreshold`,
+`SaveSettings`, and the existing enabled-state `Check` path, then repaints the slider.
+No additional hook, timer, or worker runs while the flyout is hidden.
 
 **Dynamic layout reflow:** The tile grid displays 4 buttons in a single row by default. When 5 or
 more buttons are present, `TileRect` dynamically reflows them into 2 balanced rows so no orphan

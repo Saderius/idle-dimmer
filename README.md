@@ -2,12 +2,18 @@
 
 App version: **1.0.1**.
 
+Release preparation is a deliberate action, separate from ordinary commits. See
+[the release guide](docs/RELEASING.md) for automated builds, draft releases and generated
+change notes. In-app updating is planned separately.
+
 [![Build](https://github.com/Saderius/idle-dimmer/actions/workflows/build.yml/badge.svg)](https://github.com/Saderius/idle-dimmer/actions/workflows/build.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Size](https://img.shields.io/badge/binary-280%20KB-informational)](IMPLEMENTATION.md)
 
 **Dims your screen to black after two minutes of no input — not off, just dark — and restores your
 brightness instantly on any touch, key, click, or pen stroke.**
 
-![Idle Dimmer interacting with its Quick Settings panel](docs/media/hero.gif)
+![Idle Dimmer's native acrylic responding to a moving colour background](docs/media/acrylic-demo.gif)
+
+[Watch the MP4 for smoother gradients](docs/media/acrylic-demo.mp4).
 
 No installer, no runtime, no network. A native Win32 executable and a tray icon.
 

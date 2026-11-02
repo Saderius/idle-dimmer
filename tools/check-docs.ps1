@@ -35,7 +35,7 @@ $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
 
 $codeFiles = @(
-    'IdleDimmer.cpp', 'Flyout.h', 'Flyout.cpp',
+    'IdleDimmer.cpp', 'Flyout.h', 'Flyout.cpp', 'AppVersion.h', 'tools\prepare-release.ps1',
     'TrayGesture.h', 'build.ps1', 'icons\build-icons.ps1',
     # SessionStats arrived after this list was written by hand and was left out, so the gate was
     # scanning a codebase that no longer existed. A gate blind to a module cannot catch that
@@ -126,11 +126,15 @@ $liveTerms = @(
     'tray4-app-ondark.ico',   # the embedded app icon: outline, not the tray's inset-fill "on" state
     'SliderMagnet',           # one-way preset magnet: 2% pull-in, ~1 px release, click never snaps
     'SliderPermilleAtX',      # continuous 1..60 mapping: per-mille avoids collapsing 38/39
+    'PanelSliderWheelContains', # visible-only wheel routing over the complete timeout row
+    'panelWheelRemainder',    # preserve sub-notch wheel deltas until a whole minute is reached
     'MinutesToTrackPx'        # linear minute -> pixel position, one rounding step, 59 equal intervals
     'ProgressFillWidth'       # power-card bar: session dimmed time / process uptime, clamped, pure
     'lastDimKnown'            # last-dim clock stamp is missing/usable, separate from dim history
     'restoreCount'            # the card's "Wake count" source: restores from the dimmed state
     'v1.0.1'                 # footer version hint beneath the app name
+    'IDLE_DIMMER_VERSION'     # source of truth shared by footer and release packaging
+    'prepare-release.ps1'     # explicit portable package, checksums and commit notes
     'dimmingFilled'          # enabled Dimming tile's filled bulb SVG alpha mask
     'gDimFilled'             # enabled panel bulb with transparent separator around its inset fill
     "on  = 'tray-dimmer-pick4SingleChevron-separated.svg'" # tray bulb outline separated from its fill
@@ -199,6 +203,7 @@ foreach ($t in $liveTerms) {
 # Literal assertions that were true once and are now false. Add one here the moment a
 # mechanism is replaced.
 $staleClaims = @(
+    'Every commit publishes a release', # releases are explicitly dispatched drafts
     'dims first when nothing is dimmed, then switches the displays off immediately',
     'only a successful DDC wake write brings',
     'Tray submenu offers 1/2/5/10/15/30 minutes', # presets now belong to the panel slider
