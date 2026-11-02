@@ -2,10 +2,6 @@
 
 App version: **1.0.1**.
 
-Release preparation is a deliberate action, separate from ordinary commits. See
-[the release guide](docs/RELEASING.md) for automated builds, draft releases and generated
-change notes. In-app updating is planned separately.
-
 [![Build](https://github.com/Saderius/idle-dimmer/actions/workflows/build.yml/badge.svg)](https://github.com/Saderius/idle-dimmer/actions/workflows/build.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Size](https://img.shields.io/badge/binary-280%20KB-informational)](IMPLEMENTATION.md)
 
 **Dims your screen to black after two minutes of no input — not off, just dark — and restores your
@@ -13,7 +9,8 @@ brightness instantly on any touch, key, click, or pen stroke.**
 
 ![Idle Dimmer's native acrylic responding to a moving colour background](docs/media/acrylic-demo.gif)
 
-[Watch the MP4 for smoother gradients](docs/media/acrylic-demo.mp4).
+Recorded from the running app over a moving colour background, showing how the native
+acrylic responds. [Watch the MP4 for smoother gradients](docs/media/acrylic-demo.mp4).
 
 No installer, no runtime, no network. A native Win32 executable and a tray icon.
 
@@ -83,6 +80,19 @@ running, the GPU keeps its surface, and the restore is immediate rather than a w
 > PC"* on first run. Choose **More info → Run anyway**. Signing certificates cost more than this
 > utility is worth; the source is here if you'd rather build it yourself.
 
+## Updates and releases
+
+Download updates from [GitHub Releases](https://github.com/Saderius/idle-dimmer/releases).
+Quit the running app normally so it restores brightness, then replace only `IdleDimmer.exe`.
+Keep your settings and statistics files. Each new release includes SHA-256 checksums for
+the EXE and ZIP. In-app update checking and installation are planned separately.
+
+Releases are prepared deliberately from a chosen snapshot of `main`; ordinary commits only
+run build checks. The **Prepare release** workflow builds and tests the app, creates the
+downloads, and generates a draft with highlights and a complete commit list. A draft becomes
+public only when published, so the source version above can be newer than the latest download.
+See [the release guide](docs/RELEASING.md) to prepare a version or delegate it to a coding agent.
+
 ## The panel
 
 Click the tray icon — left or right, there is only one UI — to open Quick Settings:
@@ -90,15 +100,16 @@ Click the tray icon — left or right, there is only one UI — to open Quick Se
 - **Dimming** — master switch. Also holds the display awake so the app owns dimming instead of the
   power plan.
 - **Idle slider** — 1–60 minutes, every minute the same distance apart, with invisible magnetic
-  presets at 1 / 2 / 5 / 10 / 15 / 30 / 60.
+  presets at 1 / 2 / 5 / 10 / 15 / 30 / 60. Scroll over the slider row to adjust by one minute
+  per notch: up increases the delay, down decreases it. Changes save automatically.
 - **Media** / **Sound** / **Full screen** — the three protection toggles. Media uses Windows' media
   session list (knows paused, names the player); Sound uses "this app is rendering audio", which
   also catches players that publish no session.
 - **Off at idle** — switch the displays off at the threshold instead of dimming them.
 - **Start at login** — the autostart Run-key entry.
 - **Power card** — wake count, last dim, and estimated display hours saved, persisted across runs.
-- **Footer** — turn the displays off after a five-second settling delay (monitor icon), dim immediately (crescent), open the app
-  folder, quit (which always restores brightness first).
+- **Footer** — turn the displays off after a five-second settling delay (monitor icon),
+  dim immediately (crescent), or quit, restoring brightness first.
 
 The panel never takes keyboard focus. It is created `WS_EX_NOACTIVATE`, so it cannot steal the caret
 from whatever you are typing in, and it closes on click-away or Escape without swallowing the click.
@@ -157,7 +168,7 @@ application icon, and then runs two gates that **fail the build**:
   string must be accounted for, and no stale claim may survive.
 
 ```powershell
-.\IdleDimmer.exe --self-test   # MEASURED 2026-11-02: PASS, 2128 checks; not visual certification
+.\IdleDimmer.exe --self-test   # MEASURED 2026-11-02: PASS, 2368 checks; not visual certification
 ```
 
 ## Command line
@@ -181,6 +192,8 @@ application icon, and then runs two gates that **fail the build**:
   verification failures that produced them.
 - [`docs/research/`](docs/research) — Win32 research on full-screen detection, GPU activity signals,
   and non-interactive sessions.
+- [`docs/RELEASING.md`](docs/RELEASING.md) — deliberate release builds, generated notes, downloads,
+  checksums and publication.
 
 ## License
 
