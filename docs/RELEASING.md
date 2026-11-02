@@ -92,8 +92,14 @@ version inputs without requiring a built EXE or creating output.
 
 ## Scope and validation
 
-UNVERIFIED 2026-11-02: the new workflow has not yet run on GitHub. Local build,
-self-test, packaging, checksum and ZIP inspection results are reported with the change.
+MEASURED 2026-11-02: the [first GitHub release workflow](https://github.com/Saderius/idle-dimmer/actions/runs/41478385703)
+completed successfully and created the unpublished `v1.0.1` draft from commit
+`419aca60d423ae2856f312396723525113d6743e`, attaching the EXE, ZIP and checksums.
+Its generated notes include the source commit, direct-commit list, comparison link,
+editorial highlights, and GitHub-generated changelog. The CI-built EXE's SHA-256
+matches the locally tested EXE. Publication remains a separate action.
+The initial run's action-runtime deprecation warning prompted updating checkout
+and artifact upload to the current official major versions.
 MEASURED 2026-11-02: local build/doc/icon gates passed, app self-test passed with
 2,368 checks, and the rebuilt app was relaunched on the interactive desktop.
 The package contained only the EXE and licence; the archived EXE matched the tested

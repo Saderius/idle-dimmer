@@ -28,7 +28,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -67,7 +67,7 @@ jobs:
         run: ./tools/prepare-release.ps1 -Version $env:RELEASE_VERSION -PreviousTag $env:PREVIOUS_RELEASE
 
       - name: Preserve release package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-${{ inputs.version }}
           path: build-tools/release/*

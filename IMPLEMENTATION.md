@@ -38,7 +38,7 @@ this. `MEASURED 2026-10-31`: without the guard the build fails in under a second
 
 ## 3. Process model
 
-### Release preparation (UNVERIFIED 2026-11-02 on GitHub)
+### Release preparation (MEASURED 2026-11-02 on GitHub)
 
 `AppVersion.h` defines `IDLE_DIMMER_VERSION`, shared by the footer and
 `tools/prepare-release.ps1`. The packaging script checks the requested version and
@@ -50,6 +50,9 @@ The manually dispatched `.github/workflows/release.yml` builds and self-tests an
 ordinary commits do not publish releases. GitHub-generated PR notes are appended to
 the complete direct-commit list. See [the release guide](docs/RELEASING.md).
 This adds no app update checker or background network work; that phase is deferred.
+The [first GitHub run](https://github.com/Saderius/idle-dimmer/actions/runs/41478385703)
+built, self-tested, packaged, and created an unpublished `v1.0.1` draft from commit
+`419aca6`. Its attached EXE matches the locally tested binary's SHA-256.
 
 ### Running application
 

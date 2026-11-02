@@ -10,7 +10,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # build.ps1 bootstraps the pinned Zig toolchain, then compiles. -SkipIconRender uses the
       # committed icon artifacts: rasterizing them needs headless Edge, which hung the first CI
@@ -33,7 +33,7 @@ jobs:
           if (-not (Select-String -Path diagnostics.txt -Pattern 'PASS')) { throw 'self-test did not report PASS' }
 
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: IdleDimmer-windows-x64
           path: IdleDimmer.exe
