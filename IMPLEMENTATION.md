@@ -2,7 +2,7 @@
 
 *Created 2026-10-14*
 
-Technical documentation of the current native implementation in `IdleDimmer.cpp` (build 2026-11-01, 251,392 bytes). Companion to [README.md](README.md), which covers usage. Every statement here reflects the code as it exists today; deviations are marked.
+Technical documentation of the current Win32 implementation in `IdleDimmer.cpp` and `NativeBackdrop.cpp` (MEASURED 2026-11-02, post-review build: 286,208 bytes; general manual off/wake user-confirmed). Companion to [README.md](README.md), which covers usage. Historical observations and remaining verification limits are marked.
 
 ## 1. Purpose and design goals
 
@@ -20,14 +20,14 @@ Priority order for all decisions:
 |---|---|
 | Compiler | Bundled Zig `cc` (`build-tools\zig-x86_64-windows-0.15.2`), invoked by `build.ps1` |
 | Flags | `-Os -fno-exceptions -fno-rtti -ffunction-sections -fdata-sections -Wl,--gc-sections -Wl,--subsystem,windows -s -municode` |
-| Linked | ole32, oleaut32, wbemuuid, winrt (l1-1-0, string), shell32, user32, gdi32, advapi32, wtsapi32 |
-| Output | `IdleDimmer.exe`, single file, ~246 KB (MEASURED 2026-11-01: 251,392 bytes; includes the embedded 4x panel icon masks, the multi-resolution app icon, the DDC/CI path, the WASAPI audio fallback, both displays-off modes, and two extra panel glyphs) |
+| Linked | ole32, oleaut32, wbemuuid, winrt (l1-1-0, string), shell32, user32, gdi32, advapi32, wtsapi32, dwmapi, d3d11, dxgi, windowscodecs, uuid |
+| Output | `IdleDimmer.exe`, ~280 KB (MEASURED 2026-11-02, post-review build: 286,208 bytes; temporary power logging removed) |
 | Runtime deps | OS DLLs only (no VC runtime, no .NET, no Electron). `dxva2.dll` is resolved by name at first use, never linked |
 
 The build also runs `tools\build-panel-icons.ps1` before compiling: it rasterizes
 `icons\panel\*.svg` to 80 px PNG alpha masks and regenerates `PanelIconsData.h`,
 which `Flyout.cpp` includes. `tools\check-docs.ps1` runs afterwards as the documentation
-gate. The source has no exceptions/RTTI and creates no threads.
+gate. The source has no exceptions/RTTI. Native composition uses a thread only while the panel is open; it joins on hide.
 
 **The build quits a running instance before linking.** Windows maps `IdleDimmer.exe` while it
 runs, so `lld-link` cannot replace the file and fails with `failed to write output ... Permission
@@ -40,7 +40,7 @@ this. `MEASURED 2026-10-31`: without the guard the build fails in under a second
 
 - **Single instance**: named mutex `Local\IdleDimmerNative`. A second invocation forwards CLI commands (`--enable`, `--quit`, `--status`, `--menu`) to the running instance and exits.
 - **Hidden window**: a `WS_EX_TOOLWINDOW | WS_POPUP` 0×0 window (class `IdleDimmerNativeWindow`) owns the tray icon, timers, raw input, and all messages. It is never shown.
-- **Single message loop**: `GetMessageW/DispatchMessageW` — the thread sleeps in the kernel while idle. No worker threads, no background polling loop.
+- **Single message loop**: `GetMessageW/DispatchMessageW` — the thread sleeps in the kernel while idle. No panel worker threads while hidden, no background polling loop.
 - **COM**: `RoInitialize(RO_INIT_SINGLETHREADED)` + `CoInitializeSecurity` at startup (needed for WMI and WinRT media).
 - **Desktop attachment**: `OpenDesktopW(L"Default", ...)` + `SetThreadDesktop(desk)` at `wWinMain` entry binds the thread to Explorer's interactive desktop (`WinSta0\Default`), ensuring `Shell_NotifyIconW` can register with the taskbar and CLI IPC forwarding (`FindWindowW`) works even when spawned from an isolated runner desktop (`WinSta0\exebox-...`).
 
@@ -166,79 +166,83 @@ filter is what keeps port/dock entries that answer 0..0 out of the saved list.
 8. On success: `dimmed=true`, log, tray state/icon/tooltip update. If `OffMinutes` is non-zero,
    arm the one-shot `kOffTimer` for the displays-off stage below.
 
-### 5.1 Displays-off stage: `OffMinutes` and the footer button
+### 5.1 Display-off sessions: automatic off and the manual footer button
 
-Two ways to reach it, one implementation (`OffDisplays()` / `WakeDisplays()`):
+**USER-CONFIRMED 2026-11-02:** after the live test, the user reported that behavior
+"generally seems correct now" and requested a commit. The diagnostic log records two manual
+sessions with one off request and one fresh-input wake per session. This confirms the general
+manual off/wake behavior on the current desktop; Surface, suspend/resume and every hardware
+combination are not thereby verified. The exact cause of the original loop remains unproven.
+Temporary display-power instrumentation was then removed without changing the session logic.
 
-| Trigger | Behaviour |
+`DisplayPower.h` contains the pure `displaypower::Session` decisions. One session owns its
+settling deadline, generation, and input timestamp fence. The manual footer button hides the
+panel and calls `OffDisplays(true)`, with no call to `Dim`, WMI or DDC/CI brightness control.
+The source setting `kManualSettleMs` is five seconds: input during that **pre-off settling
+period** is ignored by the off session, then the one off request is sent. This is deliberately
+a delay before off, not a claim that the app can suppress Windows' own hardware wake behavior
+after off. No input-blocking hook or repeated off command is used to enforce darkness.
+
+| Trigger | Behavior; manual path user-confirmed 2026-11-02 |
 |---|---|
-| `OffMinutes=N` (N > 0) | `N` minutes **after a dim succeeds**, the one-shot `kOffTimer` fires and the displays are switched off. `Restore()` kills the timer, so a screen that woke early is never switched off afterwards. |
-| `OffInsteadOfDim=1` | At the **idle threshold itself**, `Check()` calls `StartOffInsteadOfDim()` instead of `Dim()`: the displays go to standby and the brightness is never touched. `OffMinutes` is then irrelevant — there is no dim to delay after. |
-| Footer button (`hitDisplaysOff`, GDI mask `display.svg`) | Manual: dims first when nothing is dimmed, then switches the displays off immediately. Works even if no brightness control answers (`Dim()` fails, the standby request still goes out). |
+| Footer monitor button | Five-second settle, then one Windows display-off request; a second press while active cannot extend or duplicate the request. |
+| `OffInsteadOfDim=1` | At the idle threshold, `StartOffInsteadOfDim` arms the same session without the manual delay or brightness access. Fresh input before the queued off work cancels it. |
+| `OffMinutes=N` | After a successful dim, the existing one-shot `kOffTimer` requests off; captured brightness is still restored on return. |
 
-**Why "off instead of dim" sets `dimmed` without capturing anything.** `ScheduleWaitMs` treats a
-non-dimmed machine whose idle time is past the threshold as "a dim is due right now" and returns
-`kCheckReadyMs` (250 ms) — the comment there records that this once produced ~144 checks in two
-minutes. Switching the displays off is the settled state, so it sets `dimmed=true`, which puts the
-scheduler on the two-minute dimmed cadence. `Restore()` therefore had to learn that a dimmed state
-with no captured level is legitimate: it skips the brightness write, still accumulates the dark
-interval, clears the flag and unregisters raw input. The tray tooltip distinguishes the two
-aftermaths — `Displays off; input restores brightness` only when a level was actually captured,
-`Displays off; input wakes them` when it was not.
+Raw-input registration must succeed before starting a session; failures abort before any off
+request. The manual delay uses only `kDisplayOffDelayTimer`, which is killed on commit or cancel.
+Automatic off posts generation-tagged `kDisplayOffApply`; stale messages are rejected.
+`ApplyDisplayOff` calls `DefWindowProcW(window, WM_SYSCOMMAND, SC_MONITORPOWER, 2)` on the app's
+own window. Windows documents this route for system commands. There is no synchronous
+`HWND_BROADCAST` through arbitrary apps. The DPMS/display-power request is OS-managed; dispatch
+does not establish the physical state or driver success of every monitor.
 
-**Mechanism: `SendMessageW(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2)`**, not a DDC/CI
-power write. Twinkle Tray's button writes VCP `0xD6` over DDC/CI and that works, but it hands
-recovery to the monitor: while the panel is in that state only a successful DDC wake write brings
-it back, and if the panel ignores it or the link drops, the screen stays dark with no OS-level way
-out. The broadcast is the request the power plan itself makes — VESA **DPMS** standby, from which
-Windows wakes the display on the next input by itself (`SC_MONITORPOWER` value `-1` is sent as
-well, belt and braces) — and the app then only has to restore the brightness it captured.
+While settling/off is active, `ScheduleNext` removes the idle-check timer and `Check` returns
+before media, audio or fullscreen decisions. Thus those decisions cannot wake an explicit off
+session or immediately re-arm it. There is no off retry timer or polling while settled off.
+At commit, the last-input timestamp becomes the input fence. `WM_INPUT` parses the packet
+**before** considering wake: zero-motion/no-button mouse packets and stale events are ignored.
+Fresh meaningful input posts a generation-tagged restore. A completed wake/cancel invalidates
+old deferred work, ends the session and grants a full idle threshold before automatic off can
+be considered again. `dimmed` still records the dark interval for statistics when no brightness
+was changed; it is not an instruction to issue repeated hardware requests.
 
-Two details that are not optional:
+`WakeDisplays` makes at most one corresponding OS power-on request when an off session ends.
+Lock, suspend and automatic resume use `Restore(false)` so they cancel pending off work without
+sending an explicit competing screen-on request. Suspend clears the keep-awake requirement;
+resume/unlock re-arm the normal scheduler with grace. The existing enabled/system-awake policy
+otherwise remains in place: this change does not promise a new Surface sleep policy.
 
-- **The keep-awake claim is dropped first.** The app holds
-  `ES_CONTINUOUS|ES_SYSTEM_REQUIRED|ES_DISPLAY_REQUIRED` to keep the screen lit while it is armed,
-  which fights an explicit standby request. `SetKeepAwake(false)` releases the display claim,
-  `WakeDisplays()` re-takes it. The system-awake part is kept.
-- **Raw input is registered even when nothing was dimmed.** The footer button can switch off an
-  already-lit desktop; `RIDEV_INPUTSINK` is what turns the next mouse movement into a wake, and it
-  is unregistered again on wake when `!dimmed`.
+The superseded implementation broadcast both power commands synchronously, gave off input
+only a 600 ms guard, considered wake before filtering empty mouse packets, and allowed media/
+idle checks to run during an off session. The footer also attempted dimming first. The user's
+report is real, but the prior log contains only one off entry for the reported incident and no
+per-input/power-transition evidence. These defects are corrected as candidate causes; the exact
+cause of the observed monitor loop is **not established** and must not be certified fixed by
+compilation or decision tests.
 
-**Health reasoning behind offering it** (engineering consensus, *not* measured here; no credible
-sensor-level data was available in this environment — `websearch` returned nothing, so the two
-sources consulted are VESA DPMS and Wikipedia's LED-backlit LCD article):
+The temporary `display-power.log` instrumentation used for the live test was removed
+before committing, per AGENTS.md. Existing evidence logs are preserved locally and never
+truncated; the current build does not append session traces or count ignored packets.
 
-- Backlight LEDs age with **junction temperature and on-time**; a mode that stops driving them
-  ages nothing. Standby is the only state in which the light source is genuinely off.
-- **Dimming is not uniformly gentler.** Panels that dim by PWM keep the LED at full drive current
-  and switch it on and off; only DC-dimmed ("flicker-free", most units made since ~2025) panels
-  reduce actual LED current. So "0% brightness" can still mean full-current pulses at a low duty
-  cycle, which is not the same as "off".
-- The cost of standby is **power cycling**, and the stress that carries is inrush current into the
-  PSU's bulk capacitors and thermal cycling. Monitors are built to be switched daily for years,
-  so a handful of cycles per day is negligible; pathological cycling (every minute) is where the
-  wear concentrates — hence a minimum delay rather than switching off immediately.
-- Standby also stops the LCD from being driven and drops draw from ~8–20 W to the DPMS "off" band
-  (< 8 W in VESA's own table; modern units are far below that).
-- One visible side effect, stated rather than discovered later: waking from standby takes about a
-  second (DPMS recovery), so it is a **second stage after dimming**, never the first response to
-  idleness. Nothing is lost if a monitor never sleeps — `OffMinutes=0` keeps the old behaviour.
+Reference sources inspected 2026-11-02: [Microsoft WM_SYSCOMMAND](https://learn.microsoft.com/en-us/windows/win32/menurc/wm-syscommand)
+documents carrying out system commands through `DefWindowProc`; [Twinkle Tray source](https://github.com/xanderfrangos/twinkle-tray/blob/master/src/electron.js)
+uses a delayed OS `PostMessage` mode as well as optional DDC power modes. The earlier blanket
+claim that Twinkle Tray's off action only used DDC was wrong. This app retains Windows-managed
+off rather than adding a DDC power-state write.
 
-**Restore** (`Restore()`): both mechanisms are restored whenever *either* has saved state, then
-state is cleared, both recovery files deleted, raw input unregistered, status/tray updated.
-Returns `false` if either mechanism reports failure; `Check()` retries on the next tick because
-the saved counts are still non-zero. With a laptop panel plus external monitors one dim may
-legitimately have touched both, and skipping the empty side costs nothing. Every restore path also
-kills `kOffTimer` and wakes the displays, so quitting or locking with the screens asleep cannot
-leave them dark.
-
-Brightness is captured **once per dim** (never queried on the scheduler tick) — steady-state
-traffic is zero for both mechanisms.
+Build-only review: `build.ps1 -NoRun` refuses to execute the app, even `--quit`; if an instance
+is running it fails instead. It never auto-relaunches. `tools/test-display-power.cpp` is a
+separate memory-only decision test program with no Win32/WMI/DDC calls. The original app
+self-test includes the new decisions without deleting any existing assertions, but is not
+executed while the user's no-run instruction applies.
 
 ## 6. Idle threshold and grace periods
 
 - `idleMs` = `IdleMinutes × 60000`, read from `settings.ini` at startup (before CLI dispatch so `--diagnose` reports it), clamped to **1–60 minutes** (default 2).
-- Tray submenu offers 1/2/5/10/15/30 minutes (`kIdlePresets`); any other ini value shows as "N minutes (custom)". Preset selection writes the ini immediately and re-runs `Check()` when enabled (the grace anchor is *not* reset by a threshold change).
+- The panel slider selects thresholds continuously across the allowed range, with magnetic
+  presets. Drag changes are saved on release; there is no tray submenu. `kIdlePresets` is retained
+  only as a compatibility assertion in the slider-detent self-test, not as menu configuration.
 - `graceUntil` (`GetTickCount64` absolute time) prevents dimming until a full idle period has passed after any "system just changed" event. It is set to `now + idleMs` at: enable/startup, unlock, resume from sleep, every media/fullscreen-paused tick, every restore (input return, test end).
 
 ## 7. Protections (when *not* to dim)
@@ -327,32 +331,108 @@ bottom-right corner with `kPanelEdgeGap` = 12 logical pixels on both edges, foll
 The previous cursor-centered placement (`cursor.x - width / 2`) made the resting position
 depend on which tray cell had been clicked; that mechanism has been removed.
 
-**UNVERIFIED 2026-10-26, pending live motion audit:** the entrance slides upward by
-`kPanelEntranceTravel` = 25 logical pixels over `kPanelEntranceMs` = 130 milliseconds using
-`PanelEntranceOffset`'s quintic ease-out, based on
-[EarTrumpet's animation source](https://github.com/File-New-Project/EarTrumpet/blob/master/EarTrumpet/UI/Helpers/WindowAnimationLibrary.cs).
-**UNVERIFIED 2026-10-26, pending user audit of open/close:** `DismissPanel()` reverses the motion
-for tray-toggle, click-away and Escape dismissal. `PanelExitOffset` moves down from the current
-displayed position by the same logical travel over `kPanelExitMs` = 150 milliseconds with a
-quintic ease-in. An interrupted entrance therefore closes without jumping back to its resting
-position. The entrance-only implementation previously asserted "Dismissal remains immediate";
-that omitted the closing half of the requested interaction and has been replaced.
+**Prepared whole-window slide — USER-REVIEWED 2026-11-02: "generally great!"**
+After the reviewed revision was deployed, the user gave positive feedback on the running app and
+requested this documentation update. This accepts the overall improvement as the current baseline;
+it does not establish pixel-identical Windows motion or individually certify every former symptom.
+Gemini 3.8 Flash High implemented the initial revision through `agy`; the parent review corrected
+guard lifetime, interrupted-entrance message handling, and the remaining completion-position write.
+The earlier "it's better, but still needs polish" verdict applies to the previous build. The user's
+`20261101-2257-53.4694520.mp4` recording (30 frames/s, 712x922 pixels) showed the complete empty
+window outline before the material and controls moved into it. This rules out a text-only paint
+problem: the previous animation moved the client subtree inside a stationary DWM border/shadow.
+Successful keyframe API calls and completed-animation counters did not establish visual fidelity.
+The client-only `Opacity`/`Offset` transition is removed, not retuned.
 
-**UNVERIFIED 2026-10-26:** both directions share `kPanelMotionTimer` at a requested
-16-millisecond cadence, with `GetTickCount64` determining elapsed time.
-`SPI_GETCLIENTAREAANIMATION` disables both animations when Windows animations are off.
-Each step uses `SWP_NOACTIVATE` and updates `panelBounds`. Closing immediately removes the
-click-away hook, stops the panel refresh timer, and disables panel controls; the motion timer
-stops when the final hide completes. Extra dismissals during the exit are idempotent, and
-opening waits for that exit to finish. `HidePanel()` remains immediate for app shutdown,
-Explorer restart and "Dim now". Timer failure completes the requested transition immediately.
-No animation thread or closed-panel animation timer remains. This is a native approximation,
-not a claim to use the shell's private Quick Settings animation; visual fidelity awaits the user.
+**Previous build's presentation defect:** after the earlier whole-window change, the user reported
+a split-second frame blink before the rest animates. GPU/commit readiness and successful native
+storyboards therefore did not establish a complete first visible frame. The temporary
+`TracePresentation` logger and `presentationAuditUntil` window were removed during cleanup on
+2026-11-02; the app no longer appends to `presentation-trace.log`. Existing evidence is preserved
+unchanged, including a snapshot under ignored `build-tools/cleanup-baseline-2026-11-02/`.
+MEASURED 2026-11-02, first instrumented open: the effect factory reported load state Pending
+at the initial query before `CreateBrush`; GPU uploads and composition commit completed before reveal. Reveal then
+preceded the first native motion update by about 34 milliseconds. Commit completion does not
+establish effect-load completion or a complete visible frame; this records ordering, not the
+cause of the remaining blink.
 
-`MEASURED 2026-10-26, desktop geometry probe, taskbar auto-hide enabled`: monitor and work area
-both span `(0,0)-(3240,2160)`, while the expanded bottom taskbar occupies `(0,2064)-(3240,2160)`.
-The previous work-area-only clamp allowed the footer to overlap that taskbar. The panel remains
-topmost above ordinary windows; this does not promise priority over other topmost or shell windows.
+**New recording analysis, 2026-11-02:** the user resumed investigation with fresh app/Windows
+clips. Local frame inspection confirms the app's empty-outline/disappear/populated-reveal sequence,
+taskbar overlap, and later whole-body position shifts. The trace records nested `ShowPanel begin`
+entries followed by reveal, visible renderer teardown, and replacement during an opening. This
+supersedes a diagnosis based solely on slow acrylic loading. That build queried factory load
+before `CreateBrush`, so its Pending value did not establish the brush's state at reveal. The
+later diagnostic queried after `CreateBrush`; that temporary query has now been removed. The
+exact cause of the later visible reposition remains **UNVERIFIED**. No animation changes were
+made during this analysis. See the [comparison report](docs/research/2026-11-02-flyout-animation-comparison.md)
+for measured frames, call paths, limits, and the completed independent Gemini 3.8 Flash High
+critique through `agy`. That review supports the nested-opening and taskbar findings, but does
+not establish the cause of the late displacement; its initial rounding explanation was retracted.
+
+`DWMWA_CLOAK` now keeps the HWND and its DWM frame invisible during native preparation. The painter
+supplies the entire control texture before the target is attached. `PrepareFirstFrame` then waits
+for a `D3D11_QUERY_EVENT` GPU fence covering those uploads and for `RequestCommitAsync` completion
+covering the composition tree. These are bounded readiness checks during open, not a fixed sleep
+or an ongoing hidden polling loop. Initialization failure restores cloak/style state and uses the
+existing compatibility fallback. Runtime status reports first-frame readiness and cloak state.
+The material and controls remain fully opaque at their resting client coordinates throughout the
+motion; no transparent empty host is deliberately shown first.
+
+The panel is positioned below its anchor while still cloaked. Windows Animation Manager
+(`IUIAnimationManager`, `IUIAnimationTimer`) schedules the complete HWND's upward movement, with
+`CreateAccelerateDecelerateTransition`; the prepared window is revealed immediately before its
+storyboard is scheduled. This follows Microsoft's [timer-driven sample](https://github.com/microsoft/Windows-classic-samples/tree/main/Samples/Win7Samples/multimedia/WindowsAnimation/TimerDriven).
+Instead of cross-thread `SWP_ASYNCWINDOWPOS` moves that race with the message loop, the WAM worker
+posts `kAnimationUpdateMessage` tagged with the native session and direction to the UI thread.
+Hidden, superseded-session, and superseded-direction updates are discarded. One UI handler applies
+all ordinary native animation positions and submits a control repaint immediately, including the
+final position. The following `kAnimationCompleteMessage` only settles entrance state or hides the
+exiting window; it no longer writes a second final position. Storyboard startup failure submits
+the resting coordinate through the same message path before completion. This removes known
+position-ordering hazards without claiming the measured late displacement's cause is established.
+The flyout is placed directly behind the target monitor's taskbar
+(`Shell_TrayWnd` or `Shell_SecondaryTrayWnd` via `TaskbarForMonitor`) within the topmost band rather
+than unconditionally on top of `HWND_TOPMOST`. A missing matching taskbar falls back to
+`HWND_TOPMOST`; no taskbar window is moved or activated. The new ordering targets the observed
+behind-taskbar appearance; primary, secondary, and auto-hide behavior still need the user's audit.
+Failure to show shuts down the prepared renderer rather than leaving a hidden worker alive.
+`WM_WINDOWPOSCHANGED` updates click-away bounds to the real window.
+The DWM border, shadow, material, and content therefore travel together instead of filling a
+stationary frame. `DWMWA_TRANSITIONS_FORCEDISABLED` avoids a second automatic DWM show effect.
+Re-entrant `ShowPanel()` calls during preparation are guarded by `panelOpening` from entry through
+the end of preparation, including the shell/Win32 calls before native startup. It clears at the
+end of `ShowPanel`, independently of visual entrance completion, so the visible entrance remains
+dismissible and controls do not stay locked. Accepted tray
+gestures advance pairing state before triggering transitions, then retain it after a close clears
+older pairing state. This prevents paired notifications from starting overlapping preparation.
+
+> **USER-REVIEWED 2026-11-02.** The running revision received "generally great!" feedback.
+> Exact native parity, every taskbar configuration, and frame-by-frame elimination of each earlier
+> artifact remain **UNVERIFIED**; no new matched recordings were measured after this revision.
+
+Source parameters remain `kNativeSlideTravel` = 96 logical pixels, DPI-scaled;
+`kNativeSlideEntranceMs` = 180 milliseconds and `kNativeSlideExitMs` = 150 milliseconds. These are
+approximations selected from the user's earlier Windows recording, not private shell constants.
+Opening decelerates; closing accelerates downward. An interrupted entrance starts its replacement
+from the actual HWND position. `kAnimationCompleteMessage` carries the session tag; stale completion
+messages cannot hide a later session. Control hits wait for the entrance to settle, while tray and
+click-away dismissal remain available. `SPI_GETCLIENTAREAANIMATION` disables motion when requested.
+
+`UI_ANIMATION_IDLE_BEHAVIOR_DISABLE` stops the native timer when no storyboard is active. The
+final callback also disables it, and forced hide unregisters its handlers, abandons/shuts down the
+manager, and releases it before joining the renderer. No Windows Animation timer, panel timer,
+or native worker is retained while hidden. This path intentionally performs finite position
+updates through a native animation service; it no longer claims to animate only GPU properties.
+`HidePanel` stays immediate for shutdown, Explorer restart, and dim/display-off actions.
+
+The former fade-only path and then the client-subtree slide were rejected by the user. They are
+recorded here to explain the replacement, not as current mechanisms. The [EarTrumpet positioning
+and animation source](https://github.com/File-New-Project/EarTrumpet/blob/master/EarTrumpet/UI/Helpers/WindowAnimationLibrary.cs)
+was read, but its WPF activation path is not used. Native backdrop composition remains unchanged.
+The software/opaque fallback retains `PanelEntranceOffset` / `PanelExitOffset`, the former
+25-logical-pixel slide, and `kPanelMotionTimer` with a requested 16-millisecond cadence. Its clock
+starts after preparation; the timer stops at completion or forced hide. Existing pure geometry
+assertions remain for that fallback and do not certify the whole-window transition visually.
 
 #### The panel never takes focus, and never tries to
 
@@ -410,9 +490,8 @@ The click-away bug was "fixed" three times. Every attempt passed the then-345-as
 
 The rules that came out of it now live in `AGENTS.md`: deploy after every change and let the user audit, never synthesise the user's mouse, read the reference implementation before inventing a Windows mechanism, and instrument rather than guess when a bug does not reproduce. Instrumenting is what produced the table above — the gesture contract in §9.1 is measured, not assumed, and the trace was removed once the measurement had been turned into pure, tested functions (`AGENTS.md` §4).
 
-**A green self-test is necessary and not sufficient.** The current **2029** assertions all pass
-(MEASURED 2026-10-25, `--self-test` on the live build; this figure is re-measured after every
-change), the click-away path is confirmed working by the user on the live app,
+**A green self-test is necessary and not sufficient.** MEASURED 2026-11-02, the reviewed build's
+`--self-test` passed **2,128 checks**. The click-away path is confirmed working by the user on the live app,
 and the double-click path is not (§16).
 
 ### 9.3 Panel content and layout
@@ -438,7 +517,7 @@ Contents, top to bottom, and the CSS each is measured from:
 | WinUI-style slider (UNVERIFIED 2026-10-27): leading clock, track, trailing value | `.slider-row`, `.track-wrap`, `.stime` | thin antialiased track, fixed outer thumb ring and resizing inner accent disc; linear mapping and invisible magnets retained |
 | Half-tone rule, full bleed | `.sep` | `.sep` divider before power card |
 | Power dashboard card | `.pwrcard` | symmetric 12 px top and bottom margins (`kCardMarginTop`, `kCardMarginBottom`) separating card from dividers |
-| Distinct bottom dock bar: app identity + action buttons (UNVERIFIED 2026-10-27) | `.foot` | app name on left with a smaller version hint below, action buttons on right. The ribbon is `#222222` on a dark theme — the value Windows' own Quick Settings ribbon reports (reported 2026-11-01); the light plate is `#F9F9F9` from the design sheet, UNVERIFIED on a light taskbar. When the acrylic base is present it is a **light veil over the material** (white at 18/255 ≈ 7%): measured against the same wallpaper, Windows' ribbon is a few percent *lighter* than the panel body, not darker — painting `#222222` over the material produced a black band that visibly did not match; with no acrylic it stays the exact opaque value |
+| Distinct bottom dock bar: app identity + action buttons (UNVERIFIED adjustment, 2026-11-01) | `.foot` | App identity at left, action buttons at right. Dark acrylic has a brighter upper surface and a dedicated dark seam above the bare-material footer; opaque fallback uses `#222222` dark / `#F9F9F9` light. |
 
 **Icons are pre-rasterized alpha masks, not integer GDI line art.** `icons\panel\*.svg`
 holds the design's `IC.*` artwork at its native 20×20 viewBox. `tools\build-panel-icons.ps1`
@@ -457,6 +536,15 @@ tile uses the design-4 bulb-and-chevron shape from the tray artwork instead of t
 `IC.sun`; the other tiles keep their `IC.*` glyphs. No runtime SVG
 parser, COM imaging component or GDI+ startup is involved. The result was confirmed by the user on
 the live 200% panel on 2026-10-24.
+
+**UNVERIFIED 2026-11-02, pending live user audit:** the slider clock and six tile glyphs now use
+`stroke-width="1.0"` in their existing SVG viewBoxes, including both `dimming` and
+`dimmingFilled` variants. The prior tile stroke setting was `1.5`; screenshot measurements
+dated 2026-11-02 found the app's speaker upright approximately 50% thicker than Windows'
+speaker upright (see `docs/research/2026-11-02-glyph-stroke-weight.md`). This is an artwork
+weight adjustment, with the existing icon dimensions, paths, tint, and antialiasing pipeline
+preserved. The clock's existing logical size is retained; footer and tray artwork retain their existing weight. Native Windows
+glyphs have different weights, so this starting point does not claim exact per-glyph parity.
 
 **UNVERIFIED 2026-10-27, pending user audit:** the enabled Dimming tile uses `gDimFilled` and
 `panel\dimmingFilled.svg`; the disabled tile keeps the outline in `panel\dimming.svg`.
@@ -721,7 +809,8 @@ also **internally inconsistent**, which is how the error was finally caught: 09:
 pinned by assertion at `0.2 h`.
 
 **CONFIRMED 2026-10-31 on the running panel:** the footer's main line is `Idle Dimmer`.
-The smaller second line is `v1.0.0`, using the former uptime hint's placement and subdued style.
+The smaller second line is `v1.0.1` (source update 2026-11-02), using the former uptime hint's
+placement and subdued style. The version bump preserves the previously confirmed layout.
 The earlier combined name/version line has been replaced. The previous `up <n> min` line
 described process uptime and was removed at the user's request. `processStartTick` and
 `sessionMs` remain internal inputs to the power
@@ -767,212 +856,117 @@ would suppress dimming exactly when it is wanted. Full evidence, with sources an
 retracted claims recorded alongside it, is in
 `docs\research\2026-10-17-fullscreen-and-cutscene-findings.md`.
 
-**The panel's own background is opaque, and the acrylic backdrop it requests is therefore invisible.**
-This is deliberate and load-bearing, not an oversight. `IdleDimmer.cpp` asks DWM for
-`DWMWA_SYSTEM_BACKDROP_TYPE = 3` (acrylic) and `check-dwm` reports that this machine honours it,
-but `PaintPanel` fills the entire client with an opaque base first. Removing that fill does **not**
-reveal the backdrop: it produces a solid black panel, because the end-of-paint alpha repair at
-`Flyout.cpp` depends on the invariant that step 1 already made the surface opaque. The window is
-also non-layered and presented with `SRCCOPY`, so per-pixel alpha cannot reach the screen at all.
-`--status` therefore reports `Backdrop: acrylic`
-from the attribute call's return code alone — that means the request was accepted, not that any
-blur is visible. `UNVERIFIED 2026-10-17: judged from code, not confirmed against a screenshot`.
+### 9.4 Native desktop acrylic (`NativeBackdrop.cpp`)
 
-**MEASURED 2026-11-01 — the legacy accent API does not rescue it either.** A throwaway probe
-(temp dir, not this repo) built a layered panel-style window with per-pixel alpha over the most
-detailed 320×240 region of this desktop and called `user32!SetWindowCompositionAttribute`
-(`WCA_ACCENT_POLICY`, the exact call Twinkle Tray's 60-line `acrylic` addon makes) once per state.
-Detail was measured as mean |Δluma| at 1/8/32/64 px and compared against a control window carrying
-the same semi-transparent plate with the policy **off** — the control scales every lag by the
-plate's alpha, which is what makes the comparison meaningful:
+**Review status, updated 2026-11-02:** the user described the running native material as "kinda good" and
+supplied footer crops identifying two remaining differences. The resulting ribbon/divider
+adjustment is deployed but its visual match is **UNVERIFIED**; no post-adjustment verdict or
+screenshot has been supplied specifically for the ribbon. After the animation implementation,
+the user reviewed the running revision as "generally great!". This is acceptance of the overall
+improvement, not an exact colour or shell-motion measurement. See section 9.1 for the current
+whole-window entrance and the history of its first-frame presentation issue. API
+initialization and test results do not establish visual parity.
+The primary material now uses `Windows.UI.Composition`, `CreateHostBackdropBrush`, and
+`DWMWA_USE_HOSTBACKDROPBRUSH`. Windows samples and blurs the desktop behind the window. The app
+supplies the published Base acrylic luminosity/tint graph and Microsoft's original noise texture;
+it does not capture the desktop or refresh the material on a timer. This is an OS-rendered acrylic
+recipe, not a claim that the shell's private Quick Settings preset has been identified.
 
-| State | 64 px structure vs control | Reading |
-|---|---|---|
-| policy off (control) | 100% | the plate over the real desktop |
-| `ACCENT_ENABLE_ACRYLICBLURBEHIND`, no tint | **13%** | flat fill — no backdrop at all |
-| `ACCENT_ENABLE_ACRYLICBLURBEHIND`, `#222222` tint | 13% | identical, tint ignored |
-| `ACCENT_ENABLE_BLURBEHIND` | 15% | flat fill |
-| `ACCENT_ENABLE_HOSTBACKDROP` (state 5) | 100% | inert on this window |
-| colour-key (`LWA_COLORKEY`) holes | mean luma **3.8** vs 33.6 desktop | holes reveal black, not the desktop |
+The source references are Microsoft's [Visual Layer with Win32 sample](https://learn.microsoft.com/windows/uwp/composition/using-the-visual-layer-with-win32),
+[host-backdrop window attribute](https://learn.microsoft.com/windows/win32/api/dwmapi/ne-dwmapi-dwmwindowattribute),
+and [AcrylicBrush.cpp](https://github.com/microsoft/microsoft-ui-xaml/blob/main/controls/dev/Materials/Acrylic/AcrylicBrush.cpp).
+The ABI interop example read was [Win32Acrylic](https://github.com/ALTaleX531/Win32Acrylic).
+`NativeCompositionAbi.h` contains the required Windows SDK interface prefixes; the build requires
+no installed Windows SDK, XAML framework, MSIX package, or Windows App SDK runtime.
 
-So on this build the accent policy *substitutes* a flat surface for the window's backdrop instead of
-blurring what is behind it. That is why Twinkle Tray's addon has nothing to copy: its effect is a
-property of Chromium's composited swapchain (a window with no redirection bitmap), not of the API
-call, and a redirection-surface (GDI) window does not participate.
+**The earlier diagnosis was wrong.** Previous probes returned `E_ACCESSDENIED` when activating the
+Compositor, and this document claimed it required package identity. MEASURED 2026-11-01, interactive
+desktop, single-threaded WinRT apartment with `CreateDispatcherQueueController` created first:
+DispatcherQueue and Compositor activation both returned `S_OK`. The earlier flat DWM/accent-policy
+experiments established their own output, not the unavailability of desktop composition.
+The previous GDI painter also covered the accepted DWM backdrop request with an opaque bitmap.
+Those failed routes are preserved in the historical [acrylic case file](docs/research/2026-11-01-acrylic-colour-case-file.md)
+and [handoff](docs/HANDOFF-acrylic.md), rather than asserted as current constraints.
 
-**MEASURED 2026-11-01 — the supported route gives a flat tint too.** A second probe presented a
-plate through a **DirectComposition composition swapchain** (`D3D11CreateDevice` +
-`CreateSwapChainForComposition` with `DXGI_ALPHA_MODE_PREMULTIPLIED`) on a
-`WS_EX_NOREDIRECTIONBITMAP` window, and switched `DWMWA_SYSTEM_BACKDROP_TYPE`:
+**Material graph — UNVERIFIED visually, source parameters inspected 2026-11-01.**
+The graph is host backdrop (already blurred by Windows), Luminosity blend, Color blend, then
+source-over noise at opacity 0.02. The Base preset is dark `#202020` with tint opacity 0.50 and
+luminosity opacity 0.96; light `#F3F3F3` with tint opacity 0.00 and luminosity opacity 0.90.
+The native Composition Color/Luminosity mode names are swapped as documented in Microsoft's brush
+source. No legacy saturation/exclusion steps are added. `icons/acrylic-noise.png` is the original
+Microsoft texture; its MIT license is alongside it. `tools/build-acrylic-noise.ps1` embeds it in
+`AcrylicNoiseData.h`. `CompositionStretch.None` preserves its pixel
+scale, and the border effect tiles it instead of stretching reduced-resolution grain.
 
-| What was presented | Composite luma | Detail at 1/8/32/64 px |
-|---|---|---|
-| plate at alpha 255 (opaque) | **44.0** = exactly `#2C2C2C` | 0 / 0 / 0 / 0 |
-| plate at alpha 160, backdrop NONE | 41.9 (desktop showing through) | 9.27 / 17.73 / 15.24 / 16.19 |
-| plate at alpha 160, acrylic, light | 106.0 | 0 / 0 / 0 / 0 |
-| plate at alpha 160, acrylic, dark | 58.0 | 0 / 0 / 0 / 0 |
-| plate at alpha 160, mica, dark | 39.0 | 0 / 0 / 0 / 0 |
+**Transparent controls.** `PaintPanelOverlay` renders the existing painter over black and white,
+recovers each pixel's coverage, and produces premultiplied BGRA. This also recovers GDI's grayscale
+text antialiasing without colour keys or making the panel body opaque. The result is uploaded to a
+`DXGI_ALPHA_MODE_PREMULTIPLIED` composition swapchain above the backdrop. Existing SVG icon masks,
+layout, hit tests, and `WS_EX_NOACTIVATE` remain in use. `WS_EX_NOREDIRECTIONBITMAP` is applied only
+during the native session and restored on teardown. The painter's fallback still uses `#222222`
+for the footer; native controls leave the material visible there, with a dedicated dark divider. Neutral translucent
+card and tile films composite over that same material. OFF tile fills use Fluent
+ControlFillColorDefault / Secondary: dark white 15/255 and 21/255; light white 179/255 and
+#F9F9F9 at 128/255 (source parameters, UNVERIFIED visually).
 
-The opaque row is the control: it proves the swapchain composites and that the material sits
-*behind* it. The interior is then **perfectly flat** — zero variation at every scale — and the same
-luma (81.6 after undoing the plate) at three different desktop positions *and* on a framed
-`WS_CAPTION|WS_THICKFRAME` window. A backdrop that sampled or blurred what is behind it could not
-be position-independent and variance-free. So the system backdrop on this build is a constant tint,
-not a material: the DComp route would reproduce the flat ribbon this app already paints, at the cost
-of replacing the entire GDI presentation path. That trade was measured and rejected.
+**Footer surface adjustment — UNVERIFIED on the running adjustment, 2026-11-01.** The user's
+two footer screenshots showed a real surface step in Windows, where the previous description
+claimed that the divider alone separated the footer. MEASURED 2026-11-01 from the supplied crops,
+averaging empty strips: Windows upper body RGB approximately (33,55,56), footer (25,48,49), divider
+(22,42,43); the app body and footer both approximately (26,48,49), with a light divider (44,64,65).
+These are measurements of the supplied images, not identical desktop coordinates or proof of the
+shell's private brush settings. A fitted white-over-footer blend is approximately 8.76/255; a
+fitted black divider is approximately 26.44/255. The dark palette now uses `acrylicBodyWash`, white
+at 9/255, over the main content only, and `footerDivider`, black at 26/255. The wash is painted
+before controls and stops at `FooterDividerY`; the footer keeps the original acrylic underneath.
+The shared dividers elsewhere are unchanged. Light theme has no measured upper-surface wash and
+keeps its previous footer-divider colour. No backdrop parameters, timers, or hidden lifetimes
+change. Visual agreement still requires the user's audit of this running adjustment. The original
+user-supplied crops, exact sampling rectangles, and fitted blends are preserved in the
+[case file, section 8](docs/research/2026-11-01-acrylic-colour-case-file.md#8-native-composition-and-footer-follow-up-2026-11-01).
 
-**MEASURED 2026-11-01 — `Windows.UI.Composition` cannot even be started unpackaged here.** The one
-API that does have a live backdrop is `Compositor.CreateHostBackdropBrush` (what XAML's
-`AcrylicBrush` wraps), reached from Win32 through `ICompositorDesktopInterop::CreateDesktopWindowTarget`.
-A probe built that path with interfaces hand-declared from the SDK's own MIDL attributes
-(`ICompositor b403ca50-…`, `ICompositor3 c9dd8ef0-…` — which is where `CreateHostBackdropBrush`
-lives — `ICompositorDesktopInterop 29e691fa-…`), and:
+**MEASURED 2026-11-01 — latest ribbon build validation:** `--self-test` PASS with 2,128 checks;
+icon and documentation gates PASS; executable 277,504 bytes. Runtime inspection reported
+`Backdrop: native acrylic`, native composition running with HRESULT `0x00000000`, and the panel
+visible on the interactive desktop. The overlay checks cover the translucent white body film,
+bare footer, dark seam, premultiplied channels, and existing accent preservation. These are code
+and runtime checks, not visual acceptance. The CPU samples in section 15 predate this paint-only
+adjustment; no new hidden CPU or energy measurement is claimed for it.
 
-| Call | Result |
-|---|---|
-| `RoInitialize(RO_INIT_MULTITHREADED)` | `S_OK` |
-| `RoActivateInstance("Windows.UI.ViewManagement.UISettings")` (control) | **`S_OK`** — WinRT works here |
-| `RoGetActivationFactory("Windows.UI.Composition.Compositor")` | `S_OK` |
-| `ActivateInstance` / `RoActivateInstance` on the Compositor | **`0x80070005` `E_ACCESSDENIED`** |
+**Lifetime and power.** `nativebackdrop::Start` creates a dedicated STA thread, its DispatcherQueue,
+Compositor, target, and GPU resources when the panel opens. The thread waits in the kernel for
+control uploads, one-shot animation requests, shutdown, or compositor messages; there is no material refresh timer. The existing
+visible-panel status timer still updates the controls. `HidePanel` hides the window, calls
+`nativebackdrop::Stop`, closes/detaches the compositor, drains `ShutdownQueueAsync`, joins the thread,
+and frees the buffers and GPU references. No native renderer is created at app startup, and no
+native worker or panel timer is retained while the panel is hidden. Hidden CPU/working-set
+measurements are recorded in section 15; a visual match is UNVERIFIED
+until confirmed by the user. Memory/executable size are secondary to hidden power use, as authorized
+by the user on 2026-11-01.
 
-Context checked: window station `WinSta0`, session 1 (the console session), `DwmIsCompositionEnabled`
-= 1, medium integrity, same user. OS reports build **26300.9818 (26H2)**. So the denial is specific
-to the composition runtime, not to the environment — it wants package identity (MSIX) or the
-Windows App SDK's `Microsoft.UI.Composition`, which is not installed, and either one is a framework
-dependency this project forbids. Live material is therefore **unavailable to an unpackaged Win32
-app on this machine**, by three independent measurements (accent policy, DWM backdrop, composition
-activation).
+**Policy and observability.** `nativebackdrop::Allowed` checks High Contrast, `EnableTransparency`,
+and Battery Saver at open. Disabled effects use the opaque painter. `--status` reports the actual
+native session, initialization stage, HRESULT, and control presentation count. The obsolete
+DWM-attribute-success status is removed; the report states the renderer actually in use and whether
+its worker is alive. The native material
+can be captured with normal screenshot tools: there is no `WDA_EXCLUDEFROMCAPTURE` on this path.
+`--panel-shot` renders software fallback only; while native composition is active it writes the
+runtime report and directs the auditor to Snipping Tool, since the compositor backdrop cannot be
+read back as the app's DIB. `--acrylic-pause` only affects the software live fallback.
 
-What is left for "live" is our own capture loop: `WDA_EXCLUDEFROMCAPTURE` lets the panel read what
-is behind itself (measured: capture 255 → 71.5 with the window excluded, clean on reset), at
-1.56 ms of CPU per frame and one 16.7 ms composition-tick wait per capture — cheap enough at 4–10 fps
-while the panel is open, and zero when it is closed.
+**Removed 2026-11-02:** the obsolete global Ctrl+Alt+S screenshot shortcut, its `RegisterHotKey`
+startup registration, and its `WM_HOTKEY` handler. The old software-acrylic workaround reserved
+the shortcut system-wide even while the flyout was hidden, although native acrylic never needed
+it. The app now registers no global keyboard shortcuts; the software-only CLI audit command remains.
 
-### 9.4 Live acrylic: capture, blur, tint (`Acrylic.h` / `Acrylic.cpp`)
-
-**What it is — the real recipe, from WinUI's source.** `AcrylicBrush.cpp` and
-`AcrylicBrush_themeresources.xaml` in `microsoft/microsoft-ui-xaml` give the whole thing:
-
-```cpp
-sc_blurRadius = 30.0f;
-// dark  AcrylicBackgroundFillColorBaseBrush: TintColor #202020, TintOpacity 0.50,
-//                                             TintLuminosityOpacity 0.96
-// dark  AcrylicBackgroundFillColorDefaultBrush: TintColor #2C2C2C, TintOpacity 0.15,
-//                                             TintLuminosityOpacity 0.96
-// light AcrylicBackgroundFillColorDefaultBrush: TintColor #FCFCFC, TintOpacity 0.00,
-//                                             TintLuminosityOpacity 0.85
-// effect graph: blur -> Luminosity blend (tint colour @ TintLuminosityOpacity)
-//                    -> Color  blend      (tint colour @ TintOpacity)
-```
-
-Two things are taken from the two variants, on purpose, because they are separate measurements: the
-**luminosity colour** (`#202020` @ 0.96, Base) is what sets the body's brightness to Windows' measured
-luma ≈ 41, and the **colour opacity** (0.15, Default - the brush flyouts actually use) is what decides how
-much of the wallpaper's hue survives. Measured on a static backdrop, live, at four opacities: luma stays
-40-41 while chroma goes 23.6 → 33.2 → 38.0 → **40.4** at 0.50 / 0.30 / 0.20 / 0.15.
-
-**That 0.15 build was rejected by the user in the same session ("no, tragic").** The measurement is sound
-(luma is flat across the range, chroma roughly doubles) but it is not evidence of what looks right: the
-build they called "really, really close to native" had 0.50. Nothing in this section is verified until the
-user says so on a running build; `docs/HANDOFF-acrylic.md` records the whole sequence, the rejections, and
-the one measurement still missing.
-
-This app implements that pipeline in software (`Acrylic.cpp`): blur (three box passes, radius 26 at
-½ scale ≈ 30 logical px at this DPI), Luminosity blend at 0.96 with `#202020`, Color blend at 0.15,
-published as the panel's base layer — **and nothing else**. Three steps that used to be here were
-removed on 2026-11-01 because they are not in WinUI's recipe: a saturation ×1.25 and an exclusion
-blend against white at 26/255 (both constants exist in `AcrylicBrush.h` but `AcrylicBrush.cpp` never
-uses them — an RS3-era recipe applied to a 19H1+ graph), and the 2% noise layer. The noise was
-measured rather than guessed: Microsoft's 256×256 asset is opaque and full range (mean 128.6,
-sd 52.8), so at 2% it is as much a **+1.9 luma lift** on a ~33-level body as it is texture, and this
-pipeline applied it on the half-scale buffer, so it paid the lift and delivered a 2×2 blot instead of
-grain.
-
-**Surfaces are Fluent tokens, not plate colours** (`Flyout.cpp`, palette at `MakePalette`). Everything
-drawn on the material is a translucent white/black film so it inherits the material's colour —
-`ControlFillColorDefault` (white 13/255) for a resting tile, `ControlFillColorSecondary` (21/255) for
-hover, `CardBackgroundFillColorDefault` (white 13/255 dark, white 179/255 light) plus
-`CardStrokeColorDefault` (black 25/255 dark, 15/255 light) for the dashboard card. The card used to be
-**the accent at 8 %**, which stained a third of the panel with the user's accent colour, and the footer
-used to carry a white veil (14/255, then 9, then 18 before that) that always read as a lighter band.
-The footer is now bare material above its divider, which is what Windows shows.
-
-**Where the colour question stands is written down in `docs/research/2026-11-01-acrylic-colour-case-file.md`**,
-not here: the §1 recipe with line numbers, the Fluent surface-token table, the measurements, and the
-independent audit (what was accepted and what was rejected with evidence). A simulation of this app's
-formula against Windows' formula on the same backdrop agreed to within 1 luma, which is why the body
-maths was left alone and the surfaces were changed instead.
-
-**Where the shape comes from.** The public recipe page describes acrylic as blur → exclusion blend →
-tint → noise (`learn.microsoft.com/windows/apps/design/style/acrylic`), but the shipped WinUI 3 brush
-has no exclusion step (case file §1.3), so the code follows the brush, not the picture. The public
-pages do not state a blur radius, so the value was chosen by rendering the same captured region at radius 3 / 6 / 8 / 12
-and comparing them: the first version downscaled by 12, which is a ~30 px *box* and flattened every
-detail below 30 px — measured 9% of structure retained against 43% for the current setting, and in
-use it read as a smear rather than as glass. `IDLE_DIMMER_BLUR=<radius>` overrides the radius for
-tuning runs.
-
-**Lifetime is the panel's lifetime.** `ShowPanel()` starts the session before the window is shown
-(the exclusion has to exist before the first frame can be grabbed), `HidePanel()` stops it, which
-joins the thread, frees the bitmaps and clears the capture exclusion. Measured with the panel
-closed: 0.0 ms of CPU over 4 s and 5 threads; with it open: 5 threads → **6**, ~4.2% of one core at
-11 fps (the capture itself is 1.56 ms; the repaint dominates). A frame is published only when the
-blur actually changed, so a static desktop costs the idle panel rate.
-
-**Concurrency, stated because it is easy to get wrong.** The capture runs *outside* the lock — it
-blocks ~16.7 ms on DWM's composition tick and would stall the UI — while the lock covers only the
-upscale and the buffer swap. The painter holds the same lock for the duration of a paint
-(`LockFrame`/`UnlockFrame`), so the worker can never write the buffer being blitted, and the capture
-rect is copied under the lock because the UI thread rewrites it on every animation tick. `Stop()`
-frees the surfaces **only if the join succeeded**; on a timeout the surfaces are leaked rather than
-freed under a possibly-running thread.
-
-**The panel is excluded from capture while a session runs** (`SetWindowDisplayAffinity`,
-`WDA_EXCLUDEFROMCAPTURE`). Without it the worker captures its own previous frame and the image
-smears toward black — measured: the panel rendered as a uniform `#000000`. Consequence, stated
-plainly: while the panel is open it is also missing from screenshots and screen recordings, and
-capture tools that fill undefined regions show **garbage there** (the "red" artefact the user
-reported is that hole, not the blur).
-
-Two modes, chosen by `AcrylicLive`:
-
-- **Snapshot (default, `AcrylicLive=0`)** — one capture taken *before* the panel appears, and **no
-  refresh afterwards**. A refresh existed for a while, to replace a backdrop that had caught a window
-  mid-animation; it repaints only when the capture differs, and when it does the panel visibly changes
-  a moment after appearing — reported as the blur "loading". One frame is what a still material can
-  promise: no capture exclusion is used at all, so Snipping Tool, Game Bar and recordings work with
-  nothing to press, and the picture never changes after the panel is up. The cost is that a window
-  caught mid-animation stays in the backdrop until the panel is reopened.
-- **Live (`AcrylicLive=1`)** — a worker refreshes at ~11 fps while the panel is open. This needs
-  `WDA_EXCLUDEFROMCAPTURE`, which makes Windows report "a protected app is preventing desktop
-  capture"; **Ctrl+Alt+S** (or `--acrylic-pause`) freezes the material and drops the exclusion so a
-  screenshot works. The panel also watches for a capture tool taking the foreground and freezes
-  itself (`IsCaptureTool`).
-
-Both publish the same `HBITMAP` base layer, so the painter is identical. In snapshot mode the
-background is a still: something moving behind the panel does not move inside it. `--panel-shot`
-renders the panel into `panel-shot.bmp` in either mode.
-
-**Three defects that only a rendered frame could show** (all were invisible in a passing self-test
-and in the frame counters):
-
-1. **The worker captured an empty desktop.** A new thread inherits the *process's* window
-   station/desktop, not the main thread's, and this app moves its main thread to `WinSta0\Default`
-   at startup. Every frame came back uniform black. Fixed by binding the worker with
-   `OpenDesktopW(L"Default")` + `SetThreadDesktop`, and closing that handle when the thread exits.
-2. **A bitmap cannot be selected into two DCs.** The worker kept each frame selected in its own DC,
-   so the painter's `SelectObject` failed, its source DC stayed on the default 1×1 bitmap, and the
-   panel painted `#000000` while the frame file next to it was correct. Fixed by selecting surfaces
-   only around the GDI calls that draw into them.
-3. **A per-capture capture-exclusion left holes.** Applying `WDA_EXCLUDEFROMCAPTURE` only around
-   each `BitBlt` made the panel invisible for ~20 ms out of every 90 — and a screenshot taken in
-   that window showed the *sharp* desktop where the panel should be, which the user read as a blur
-   glitch. The exclusion is now held for the whole session: no holes, at the cost of the panel being
-   absent from screenshots (hence `--panel-shot`).
-
-None is detectable from the counters — `frames N` and `painted N` were healthy while the panel was
-black. That is why `--panel-shot` exists: it runs the *real* painter into a bitmap and writes
-`panel-shot.bmp`, so the panel's appearance is an artifact rather than a claim.
+**Software compatibility fallback (`Acrylic.h` / `Acrylic.cpp`).** If native initialization fails,
+the existing capture pipeline is retained, and `--status` exposes the native HRESULT/stage. With
+`AcrylicLive=0`, it takes one snapshot before showing the panel; with `AcrylicLive=1`, it uses the
+legacy worker and `WDA_EXCLUDEFROMCAPTURE` until hide or pause. That pipeline still uses its former
+hybrid tint and reduced-resolution noise; it is not the preferred material and its colour match
+was rejected by the user. `--acrylic-test` audits only that software pipeline. `Acrylic=0` disables
+both material paths. The old software worker joins and clears its exclusion on hide. Its lifetime
+and bitmap locking are unchanged in this revision.
 
 ## 10. Persistence and files
 
@@ -980,7 +974,7 @@ All state lives next to the exe (`folder\…`):
 
 | File | Content | Lifecycle |
 |---|---|---|
-| `settings.ini` | `[Settings] Enabled, ProtectMedia, ProtectSound, ProtectFullscreen, IdleMinutes, Icon, OffMinutes, OffInsteadOfDim, Acrylic` — exactly one section, no BOM, CRLF, fixed key order | Rewritten whole by `SaveSettings()` (temp file + rename) on any toggle/preset/design change; the startup heal adds missing keys (`ProtectSound=1`, `OffMinutes=0`, `OffInsteadOfDim=0`, `Acrylic=1`) to a file written before they existed |
+| `settings.ini` | `[Settings] Enabled, ProtectMedia, ProtectSound, ProtectFullscreen, IdleMinutes, Icon, OffMinutes, OffInsteadOfDim, Acrylic, AcrylicLive` — exactly one section, no BOM, CRLF, fixed key order | Rewritten whole by `SaveSettings()` (temp file + rename) on any toggle/preset/design change; the startup heal adds missing keys (`ProtectSound=1`, `OffMinutes=0`, `OffInsteadOfDim=0`, `Acrylic=1`) to a file written before they existed |
 | `brightness-recovery.bin` | `Saved { magic 0x53444932 ('SDI2'), count, panels[4]{ path[1024], brightness } }` | Created before dimming, deleted on restore; validated on load (magic, count 1–4, path must contain `WmiMonitorBrightnessMethods.`, brightness ≤ 100) |
 | `ddc-recovery.bin` | `DdcSaved { magic 0x31434444 ('DDC1'), count, monitors[8]{ desc[128], brightness, min, max } }` | Same lifecycle as `brightness-recovery.bin`, for the DDC/CI external-monitor path; validated on load (magic, count 1–8, terminated description, brightness ≤ 100). Written only when at least one monitor answered |
 | `stats.bin` | `PersistedStats { magic 0x53545453 ('STTS'), version 1, wakeCount, dimCount, restoreCount, dimmedMs, lastDimWallMs }` | Written on every dim/restore and on every dimmed scheduler check; read once at startup into `sessionstats::Seed()`. Rejected on magic or version mismatch, which silently leaves the counters at zero |
@@ -994,7 +988,7 @@ The file is parsed by `ParseSettings` (raw text in, settings out) and written by
 is the only I/O around them.
 
 **Writing is canonical.** Exactly one `[Settings]` section, no UTF-8 BOM, CRLF line endings, and
-the keys in the fixed order `Enabled`, `ProtectMedia`, `ProtectFullscreen`, `IdleMinutes`, `Icon`.
+the keys in the fixed order `Enabled`, `ProtectMedia`, `ProtectSound`, `ProtectFullscreen`, `IdleMinutes`, `Icon`, `OffMinutes`, `OffInsteadOfDim`, `Acrylic`, `AcrylicLive`.
 The bytes are written to `settings.ini.tmp` and renamed over the target
 (`MoveFileExW` + `MOVEFILE_REPLACE_EXISTING`), so a crash mid-write cannot leave a truncated
 settings file.
@@ -1039,8 +1033,9 @@ and survived the change to the adaptive scheduler, which made it false.
 | `Dimmed; input restores brightness` | Dimmed; the first input will restore (§4 "raw input, not polling"). |
 | `Disabled; normal Windows power settings` | Master switch off; the power plan owns display-off again (§8). |
 
-| `Displays off; input restores brightness` | The displays-off stage ran while dimmed (§5.1); any input wakes them and restores the captured level. |
-| `Displays off; input wakes them` | The footer button switched the displays off without dimming; there is no level to restore. |
+| `Displays off; input restores brightness` | An off request was dispatched with captured brightness; fresh meaningful input ends the session and restores that level (§5.1). Physical off state is not confirmed. |
+| `Displays off; input wakes them` | An off request was dispatched without a brightness change; fresh meaningful input ends the session. Physical off state is not confirmed. |
+| `Displays off in 5 seconds` | Manual pre-off settling period; no power-off command has been sent yet. |
 
 Error and pause states append their own text at the point of failure — for example
 `Paused for media playback` (an SMTC session is Playing/Paused), `Paused for audio playback`
@@ -1062,12 +1057,12 @@ Error and pause states append their own text at the point of failure — for exa
 | `--quit` | Graceful shutdown of the running instance (restores brightness) |
 | `--status` | Make the running instance write `diagnostics.txt` (status/enabled/dimmed/threshold/checks/input-sink state); exit 1 if no instance |
 | `--menu` | Open (or close) the Quick Settings panel of the running instance. Flag name kept for compatibility; there is no separate menu any more |
-| `--self-test` | Run 2098 decision-function assertions (dim decisions, clamps, wrap, tray descent buckets, tray gesture classification/pairing, click-away rect, `settings.ini` parse/format/heal including `OffMinutes`, flyout layout/hit-test including the displays-off button, linear slider/magnet spacing, panel icon edge coverage, DDC/CI monitor matching and level clamping, WASAPI session classification), write report, exit 0/1 (no COM/tray/mutex/hardware) |
+| `--self-test` | MEASURED 2026-11-01: PASS, 2,128 checks covering decisions, layout/hit tests, settings, icons, DDC/CI/audio classification, and transparent native-control compositing including the ribbon surfaces. Write the report and exit 0/1; no live compositor, tray instance, or hardware dim/restore test. A pass does not certify appearance. |
 | `--diagnose` | Report media API health (**SMTC sessions and the WASAPI audio fallback separately**, because they fail apart — §7.2), WMI brightness, panel levels, DDC/CI availability and every monitor's current level/range, the dim path that will be used, the displays-off delay, the live acrylic setting, fullscreen detection, autostart, threshold, icon design/theme variant/file presence; exit 1 only if media is unavailable or **both** brightness mechanisms are unavailable (can run alongside a live instance — dispatch happens before the mutex) |
 | `--test-brightness` | Full hardware dim→verify minimum→restore cycle per mechanism, report PASS/FAIL with per-monitor before/dimmed/restored levels, then quit |
 | `--acrylic-test` | Run the real capture→blur→tint pipeline once over the busiest desktop region, write `acrylic-sample.bmp`, report fine/coarse detail before and after; exit 0 only when fine detail drops by more than half while coarse structure survives (a blur, not a flat fill) |
-| `--panel-shot` | Render the panel through the real painter into `panel-shot.bmp` and exit. Works with the panel closed — it starts a capture session for the shot if none is running. The only way to see the panel as an image, because a live session excludes it from ordinary screen capture (§9.4) |
-| `--acrylic-pause` | Freeze the material where it is and clear the screenshot exclusion, so the panel can be captured by ordinary tools; the panel keeps its last frame. The same thing is on **Ctrl+Alt+S**. The next panel open starts a fresh session |
+| `--panel-shot` | Software fallback only: render through the painter into `panel-shot.bmp`, starting a software capture session if needed. When native composition is active, write the runtime report instead and direct the auditor to an ordinary screenshot tool; the OS backdrop cannot be read back as the app's DIB. Native acrylic needs no capture exclusion (§9.4). |
+| `--acrylic-pause` | Software live fallback only: freeze the frame and clear its screenshot exclusion; the next panel open starts a fresh fallback session. Native acrylic already works with normal screenshot tools and needs no freeze. No global keyboard shortcut is registered. |
 
 ## 13. Failure handling matrix
 
@@ -1089,12 +1084,82 @@ Error and pause states append their own text at the point of failure — for exa
 
 - No network calls, no telemetry, no admin requirement; runs as the signed-in user.
 - Raw input is consumed as *existence only*; key/mouse payloads are never read or stored (code comment enforces this).
-- **Live acrylic reads screen pixels, in memory only.** While the panel is open the worker captures the panel's screen rectangle (not the whole desktop), blurs and tints it, and hands it to the painter. Nothing is written to disk and nothing leaves the process. The only screen pixels that ever reach a file are the two explicit audit commands — `--acrylic-test` (a 360×520 region) and `--panel-shot` (the rendered panel) — and `Acrylic=0` disables the capture entirely. Stated here because an earlier version of this list said the app never touches screen content, which stopped being true the moment the material was implemented.
-- Logs contain brightness transitions and error codes only.
+- **Native acrylic stays in the OS compositor.** The preferred native material never copies desktop pixels into the app and uses no capture exclusion. Only the software compatibility fallback reads the panel rectangle in memory. Explicit `--acrylic-test` / software `--panel-shot` commands may write audit BMPs. `Acrylic=0` disables both paths.
+- Normal activity logging remains. The temporary presentation logger was removed on 2026-11-02;
+  the app no longer writes per-frame presentation traces. Earlier trace files are retained as
+  historical evidence, not appended by the current build (section 9.1).
 - The only registry writes are its own Run key value; the only brightness writes are WMI sets on its own panels and DDC/CI `SetMonitorBrightness` calls to the monitors it restores.
 
 ## 15. Measured footprint (this machine, Surface Book 3)
 
+**MEASURED 2026-11-02 — cleanup build:** build/icon/documentation gates PASS; self-test PASS with
+2,128 checks; executable 284,160 bytes. All application translation units also compile with
+unused-function and unused-variable warnings treated as errors. Removed unused helpers and
+temporary presentation tracing; no new animation timing, interpolation, or positioning mechanism.
+The executable has no global-hotkey registration reference or presentation-trace path. CPU/memory
+measurements below belong to earlier builds and were not repeated for this cleanup.
+
+**MEASURED 2026-11-02 — global-shortcut removal build:** build/icon/documentation gates PASS;
+self-test PASS with 2,128 checks; executable 288,768 bytes. Hotkey registration, unregistration,
+and handler references are absent from the app source; the executable contains no reference to
+either hotkey registration API. This change removes the screenshot shortcut without changing
+animation code. The CPU/memory sample below belongs to the preceding animation build and was
+not repeated for this removal.
+
+**MEASURED 2026-11-02 — UI-thread-position revision, after parent review of the Gemini patch:**
+self-test PASS with 2,128 checks; build/icon/documentation gates PASS; executable 289,280 bytes.
+Preparation is guarded, native moves carry session/direction tags to the UI, and completion no
+longer applies a separate position correction. **USER-REVIEWED 2026-11-02:** the user described the
+running revision as "generally great!"; exact native parity and per-artifact frame measurements
+remain **UNVERIFIED**. An IPC open/close check reported native HRESULT
+`0x00000000`, completed entrance and exit, and native worker absence after close. The final applied
+position, completion, and following visible-only repaint reported the same HWND rectangle; that
+is geometry evidence, not a measurement of on-screen pixels or a real tray gesture reproduction.
+
+**MEASURED 2026-11-02 11:14, UI-thread-position revision, PID 19620, threshold one minute, panel
+closed, 20.040-second sample after an open/close cycle:** process CPU increment **0 ms**; working
+set **25.71 MiB**, private bytes **9.27 MiB**, **6 threads** at sample end. Native presentation count
+remained **25** at both ends, the panel was hidden at both ends, and the native worker was absent
+at both ends. This is a bounded quiet interval, not a long-term energy measurement or a guarantee
+of zero CPU at all times. Previous samples below are historical.
+
+**MEASURED 2026-11-02 — prior prepared whole-window slide with temporary presentation trace:**
+self-test PASS with 2,128 checks; build/icon/documentation gates PASS; executable 287,744 bytes.
+The running build was reviewed by the user as improved but still needing polish; work on that
+polish is deferred. The initial trace timing and its limits are recorded in section 9.1. Hidden
+CPU, memory, and energy for this Windows Animation Manager build are **NEVER MEASURED**; older
+samples below do not establish its footprint.
+
+**MEASURED 2026-11-01 — superseded client-subtree compositor slide build:** self-test PASS with 2,128 checks;
+icon/documentation gates PASS; executable 283,648 bytes. Runtime inspection reported native
+animation submitted successfully with HRESULT `0x00000000`, two completed transitions, panel
+hidden, and native worker absent after close. This verifies API completion and teardown, not
+visual matching to the user's recording. No new hidden CPU/energy sample was taken for this
+position-animation adjustment; the preceding fade-build sample below remains historical.
+
+**MEASURED 2026-11-01 — previous fade-only build validation (superseded by the slide):** self-test PASS with 2,128 checks;
+icon/documentation gates PASS; executable 282,624 bytes. Native animation reported `S_OK` at
+"submitted to compositor" and the completed count advanced from 1 (open) to 2 (closed), then 3
+after reopening. The close report showed the panel hidden and the native worker absent.
+A 10.01-second hidden sample, PID 41068, recorded **0 ms process CPU**, with presentation count
+unchanged at 29 at both ends and the worker absent. This is a bounded CPU sample, not a long-term
+energy measurement or proof of visual fidelity. The renderer was reopened and left live for audit.
+
+**MEASURED 2026-11-01 — native acrylic revision, panel opened and then closed, idle threshold
+one minute, 20-second hidden sample, PID 34588:** process CPU increment **0 ms**; working set
+**25.82 MiB**, private bytes **8.96 MiB** at sample end. Threads settled from **9 to 6** as native
+runtime resources retired. This sample includes the process, not merely the native worker, and is
+not a long-term CPU or energy measurement. Native initialization had completed with `S_OK`; the
+panel was confirmed hidden through `--status`. Visual matching remains UNVERIFIED.
+
+**MEASURED 2026-11-01 — final embedded-texture build, PID 45648, one-minute threshold,
+20-second sample after native shutdown:** CPU increment **0 ms**. `--status` reported the panel
+hidden, native worker absent, and native presentation count unchanged at **67** at both ends;
+idle-check count remained **2**. The process retained **13** OS/runtime threads but they accumulated
+no CPU time in this sample. This confirms a quiet sampled interval, not a claim of zero CPU forever.
+A preceding apparent hidden sample accumulated **1,250 ms** while its presentation count advanced
+from **22 to 42**; it was rejected as a hidden-only measurement because panel rendering occurred
+inside that interval. No visual match is inferred from either measurement.
 > **These figures predate the adaptive scheduler in §4.1 and are STALE — re-measurement
 > outstanding.** They describe the fixed-30 s-timer build. Do not quote them as the current
 > cost. See the note below on what has and has not been established.
@@ -1170,3 +1235,20 @@ Probed on this Surface Book 3 (2026-10-14) to determine whether the dimmer could
 - The keyboard/trackpad talk through Microsoft vendor collections (`TARGET_KIP`, pages `ff05`/`ff0b`/`ff07`, incl. undocumented "Surface HID Color") — undocumented, out-of-servicing firmware (Book 3 driver end: 2025-04-01); not written to.
 
 **Conclusion**: backlight levels, the F5/F7 key, and the idle fade timer live entirely in the keyboard base's firmware — Windows has no entry point, and none is needed (the keyboard dims and re-illuminates itself).
+
+### Historical display-off build-only phase — 2026-11-02
+
+MEASURED 2026-11-02, build-only: 287,744 bytes (281 KiB), documentation/icon gates PASS;
+standalone hardware-free display-power decisions PASS (240 checks). IdleDimmer.exe was not
+executed, including its full self-test, at the user's explicit request. Earlier full-suite
+passes describe prior builds. Runtime power behavior, CPU, memory and driver wake compatibility
+for this candidate are NEVER MEASURED. The user will choose when to test; the app remains stopped.
+
+**Validation update, 2026-11-02:** the user returned and authorized launch of the same candidate artifact. Full self-test MEASURED PASS (2,368 checks); app launched on the interactive desktop. No screen-off or synthetic input was triggered by the agent. Monitor behavior remains UNVERIFIED until the user tests it. Earlier no-run entries describe the initial build-only phase.
+
+**USER-CONFIRMED / commit cleanup, 2026-11-02:** the user reported manual off/wake behavior
+"generally seems correct now" after two logged sessions and requested a commit. Temporary
+power logging and the ignored-input counter were removed; session decisions and commands are
+preserved. MEASURED 2026-11-02, cleaned build: 286,208 bytes; full self-test PASS (2,368 checks);
+build/doc/icon gates PASS. The cleaned app is relaunched for normal use. This records the
+user's general desktop confirmation, not a new Surface, suspend/resume or resource measurement.

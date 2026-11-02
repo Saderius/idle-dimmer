@@ -1,12 +1,145 @@
 # Handoff — the acrylic background
 
+> **HISTORICAL CHECKPOINT — 2026-11-01, commit `3ec8c43`.** This handoff records the rejected
+> software material. The subsequent native-composition revision is described in IMPLEMENTATION.md
+> section 9.4; current review status is below. The earlier Compositor-access diagnosis was
+> disproved by successful activation with a DispatcherQueue on the interactive desktop. This file
+> remains as the record of the failed experiments, not the current implementation instructions.
+
+## Current handoff — 2026-11-02
+
+**USER-CONFIRMED display-off behavior, 2026-11-02:** after returning and testing the running
+candidate, the user reported "behavior generally seems correct now" and requested a commit.
+The trace records two manual off/wake sessions with one request per transition. This is a
+general desktop confirmation; Surface and suspend/resume behavior remain unverified. The
+manual path uses a five-second pre-off settle, one OS request on the app's own window, filtered/
+timestamped input, and tagged deferred work. It bypasses brightness traffic and pauses ordinary
+idle/media checks while active. Temporary display-power instrumentation was removed before
+commit without changing those decisions. Historical no-run phases and the incident analysis
+are preserved in `docs/research/2026-11-02-display-off-loop.md`.
+
+**UNVERIFIED glyph-weight adjustment, 2026-11-02:** reduced the slider clock and six tile glyphs' SVG stroke
+setting from `1.5` to `1.0`, including both Dimming variants, after screenshot coverage
+measurements showed heavier app strokes. Size, position, antialiasing, and runtime lifecycle
+are preserved; footer and tray artwork are unchanged. The clock was added in a follow-up after
+the user pointed out that the tile-only adjustment left it heavier. Awaiting live user comparison;
+see `docs/research/2026-11-02-glyph-stroke-weight.md` for the measured baseline.
+
+**Version update, 2026-11-02:** the app footer now displays `v1.0.1`; README and the documentation
+gate use the same version. This is a label-only change with no animation or lifecycle changes.
+
+**Cleanup, 2026-11-02:** removed the unused `Mmss` formatter and `CaptureRegionToBmp` declaration/
+implementation, plus the temporary presentation logger, its calls, audit deadline, and debug-only
+factory query. The reviewed animation's position, repaint, and completion behavior is preserved;
+this is not a new smoothness implementation. The software fallback, CLI audit commands, COM ABI
+slots, and all self-test assertions are retained. Stale tray-submenu documentation is corrected.
+Existing trace evidence is preserved unchanged, with a snapshot under ignored
+`build-tools/cleanup-baseline-2026-11-02/`; the current build does not append presentation traces.
+MEASURED 2026-11-02, cleanup build: 284,160 bytes; build gates PASS; self-test PASS with 2,128
+checks; all application source files compile with unused-function/unused-variable warnings as
+errors. Global keyboard registration remains absent. Earlier binary and resource figures below
+describe their named historical revisions, not the cleanup build.
+
+**Global shortcut removal, 2026-11-02:** removed the old Ctrl+Alt+S registration and keyboard
+handler after the user identified the unexpected hotkey. It was present in checkpoint `3ec8c43`
+as a screenshot workaround for the software renderer and was still reserved globally at startup.
+Native acrylic does not need it. No global keyboard shortcuts are now registered; the
+software-only `--acrylic-pause` CLI command remains. Keyboard shortcuts mentioned in historical
+sections below describe the removed implementation.
+MEASURED 2026-11-02, shortcut-removal build: 288,768 bytes; build gates PASS; self-test PASS with
+2,128 checks; registration API references absent from source and executable. The app was restarted
+to release the prior process's shortcut registration. No animation code changed in this removal.
+
+**Live review outcome — USER-REVIEWED 2026-11-02:** after the reviewed implementation was
+deployed, the user responded "okay, generally great!" and asked for documentation to be updated.
+Treat this revision as the positively reviewed baseline. The feedback covers the overall result;
+it does not prove exact shell parity or individually verify every former artifact. No additional
+animation changes were made for this documentation update.
+
+**Latest follow-up:** following user instruction and critique reconciliation, implementation of
+the flyout entrance fixes completed. Three key structural defects identified in the trace and
+frame comparisons have been addressed in code. Gemini 3.8 Flash High produced the initial patch
+through the actual `agy` CLI; parent review corrected preparation-guard lifetime, removed the
+remaining completion-position write, and added direction validation and immediate content updates:
+
+1. **Re-entrant preparation and teardown:** protected the open cycle with a `panelOpening` lifecycle
+   guard in `IdleDimmer.cpp` and moved tray gesture time/code recording before `TogglePanel` invocation,
+   dropping duplicate `WM_LBUTTONUP`/`NIN_SELECT` cascades that previously aborted and restarted active
+   composition.
+2. **Taskbar occlusion:** added `TaskbarForMonitor` to locate the monitor's taskbar HWND (`Shell_TrayWnd`
+   or `Shell_SecondaryTrayWnd`) and inserted the flyout immediately beneath it via `hWndInsertAfter = taskbarWnd`,
+   allowing the panel to emerge from behind the taskbar during its upward entrance.
+3. **Single UI-thread positioning authority:** removed cross-thread `SWP_ASYNCWINDOWPOS` calls from the WAM
+   worker thread in `NativeBackdrop.cpp`; position updates are now posted via `kAnimationUpdateMessage`
+   with session/direction tokens. Obsolete updates are discarded; the final update uses the same
+   handler as other positions, and completion performs no separate snap. Every applied update
+   submits fresh control content rather than waiting for the visible-only seconds tick.
+
+MEASURED 2026-11-02, reviewed revision: build/icon/documentation gates PASS; self-test PASS with
+2,128 checks; executable 289,280 bytes. Those gates establish build health, not visual fidelity.
+That instrumented revision included session-tagged requested/applied positions; the later cleanup
+above removes the logger without altering the native update path.
+
+**Visual status:** overall improvement accepted in the live review above. Exact motion matching,
+all monitor/auto-hide taskbar configurations, and separate frame-by-frame confirmation of each
+former artifact remain **UNVERIFIED**. Do not replace the reviewed mechanism based only on a
+synthetic test or an unmeasured theory.
+
+The preferred material remains Windows host-backdrop composition with transparent controls.
+The entrance moves the **whole HWND** using Windows Animation Manager, carrying its DWM
+border/shadow with the material and controls. During open, `DWMWA_CLOAK` hides the frame while the complete
+control texture is uploaded and the composition tree is attached. `PrepareFirstFrame` waits for a GPU fence
+and composition commit before the window is uncloaked behind the taskbar and scheduled for ascent.
+Windows' animation preference is respected. The timer is disabled at rest; hide releases the animation
+manager and native renderer. MEASURED 2026-11-02, current revision PID 19620, one-minute threshold,
+20.040-second closed-panel sample: process CPU increment 0 ms; working set 25.71 MiB; private
+bytes 9.27 MiB; 6 threads; native presentation count unchanged at 25 and no native worker at
+either end. This is a bounded CPU sample, not a long-term power guarantee. Native open/close
+completed with HRESULT `0x00000000`; the user subsequently gave the positive live verdict above.
+
+Historical presentation traces established ordering, not complete on-screen readiness or the
+precise cause of every artifact. The logger is removed in the cleanup above. Any future motion
+investigation should use fresh, scoped profiling against a user reproduction rather than treat
+the historical timing or a successful composition commit as proof of current visual fidelity.
+
+MEASURED 2026-11-02, earlier pre-fix trace build: self-test PASS with 2,128 checks; build gates PASS;
+executable 287,744 bytes. These checks establish build health, not visual fidelity. Current code
+and documentation remain uncommitted after checkpoint `3ec8c43`; generated audit BMPs and logs
+must not be included in a commit.
+
+The detailed mechanism and open issue are in [IMPLEMENTATION.md section 9.1](../IMPLEMENTATION.md#91-panel-window-focus-and-click-away-dismissal).
+Native material and ribbon details remain in [section 9.4](../IMPLEMENTATION.md#94-native-desktop-acrylic-nativebackdropcpp).
+
+## Earlier native material and ribbon follow-up — 2026-11-01
+
+The preferred renderer is now `NativeBackdrop.cpp`: Windows host-backdrop composition beneath
+transparent GDI controls, with the original Microsoft grain texture embedded in the executable.
+The rejected software material below remains only as a compatibility fallback. The user reviewed
+the native build as "kinda good", then supplied footer screenshots showing that Windows has a
+brighter upper surface and dark seam while the app had a continuous surface and light seam.
+
+The requested correction is implemented and deployed: dark `acrylicBodyWash` is white at 9/255
+above `FooterDividerY`, `footerDivider` is black at 26/255, and the footer keeps the original
+acrylic. **UNVERIFIED visually:** there is no verdict or screenshot of that adjustment yet.
+MEASURED 2026-11-01: build gates PASS, self-test PASS with 2,128 checks, executable 277,504 bytes;
+native composition initialized with HRESULT `0x00000000` and the panel was visible at deployment.
+No native worker is retained on hide; the earlier bounded hidden CPU samples and their limitations
+are in IMPLEMENTATION.md section 15, not evidence of the latest build's exact power consumption.
+
+Continue from [IMPLEMENTATION.md section 9.4](../IMPLEMENTATION.md#94-native-desktop-acrylic-nativebackdropcpp)
+and the [case-file follow-up](research/2026-11-01-acrylic-colour-case-file.md#8-native-composition-and-footer-follow-up-2026-11-01),
+which includes the preserved screenshot evidence. Commit `3ec8c43` remains the pre-native checkpoint;
+the native and ribbon changes are uncommitted. The remaining sections describe
+the historical software checkpoint and must not be read as current implementation instructions.
+
+
 *Written 2026-11-01, at the user's request ("no, tragic, write handoff"). It records where the material
 work stands, what has been proven, what has been rejected and why, and how to measure the next attempt
 instead of guessing at it.*
 
 ---
 
-## 1. Where it stands
+## 1. Where it stood at the software checkpoint
 
 The panel's background is a software copy of Windows 11 acrylic: one screen capture at panel open, blurred,
 tinted with the WinUI recipe, painted as the panel's base layer.

@@ -306,7 +306,7 @@ inline int Sc(int logical, int dpi) {
 struct Palette {
     Color base,      tileOff,  tileHover, tileBorder, divider, text, textDim,
            thumb,    track,     tick,      pillBg,    pillText, onAccent, dock,
-           cardFill, cardEdge;
+           cardFill, cardEdge, acrylicBodyWash, footerDivider;
 };
 
 Palette MakePalette(bool dark, Color accent) {
@@ -315,7 +315,7 @@ Palette MakePalette(bool dark, Color accent) {
     if (dark) {
         return Palette{
             RGBc(0x2C, 0x2C, 0x2C),   // base
-            RGBc(0xFF, 0xFF, 0xFF, 13),  // tileOff   ~5%
+            RGBc(0xFF, 0xFF, 0xFF, 15),  // ControlFillColorDefault #0FFFFFFF
             RGBc(0xFF, 0xFF, 0xFF, 21),  // tileHover ~8%
             RGBc(0xFF, 0xFF, 0xFF, 18),  // tileBorder
             RGBc(0xFF, 0xFF, 0xFF, 21),  // divider   ~8%
@@ -336,12 +336,15 @@ Palette MakePalette(bool dark, Color accent) {
             // is what makes it read as "lighter than the panel" over acrylic.
             RGBc(0xFF, 0xFF, 0xFF, 13),   // cardFill  #0DFFFFFF (white 5%)
             RGBc(0x00, 0x00, 0x00, 25),   // cardEdge  #19000000 (black 10%)
+            // Fitted to the user's Windows footer crop (2026-11-01); live match UNVERIFIED.
+            RGBc(0xFF, 0xFF, 0xFF, 9),    // acrylicBodyWash: lift the main surface, keep footer bare
+            RGBc(0x00, 0x00, 0x00, 26),   // footerDivider: dark seam, separate from other rules
         };
     }
     return Palette{
         RGBc(0xF3, 0xF3, 0xF3),      // base
-        RGBc(0x00, 0x00, 0x00, 10),  // tileOff   ~4%
-        RGBc(0x00, 0x00, 0x00, 15),  // tileHover ~6%
+        RGBc(0xFF, 0xFF, 0xFF, 179), // ControlFillColorDefault #B3FFFFFF
+        RGBc(0xF9, 0xF9, 0xF9, 128), // ControlFillColorSecondary #80F9F9F9
         RGBc(0x00, 0x00, 0x00, 15),  // tileBorder
         RGBc(0x00, 0x00, 0x00, 21),  // divider   ~8%
         RGBc(0x00, 0x00, 0x00),      // text
@@ -359,6 +362,8 @@ Palette MakePalette(bool dark, Color accent) {
         // Light theme uses the opposite film: a near-opaque white card with a faint dark edge.
         RGBc(0xFF, 0xFF, 0xFF, 179), // cardFill  #B3FFFFFF (white 70%)
         RGBc(0x00, 0x00, 0x00, 15),  // cardEdge  #0F000000 (black 6%)
+        RGBc(0x00, 0x00, 0x00, 0),   // acrylicBodyWash: no light-theme reference measured
+        RGBc(0x00, 0x00, 0x00, 21),  // footerDivider: existing light-theme rule
     };
 }
 
@@ -686,12 +691,6 @@ Row BuildRows(const PanelState& s) {
     return r;
 }
 
-void Mmss(int seconds, wchar_t* out, int cap) {
-    if (seconds < 0) seconds = 0;
-    const int m = seconds / 60, s = seconds % 60;
-    swprintf(out, cap, L"%d:%02d", m, s);
-}
-
 }  // namespace
 
 // Live acrylic frames arrive as an HBITMAP from Acrylic.cpp; the painter needs its size to stretch
@@ -774,6 +773,12 @@ void PaintPanel(HDC dc, int widthPx, int heightPx, const PanelState& state, int 
     // ---- 4. tile grid (dynamic 1-row / 2-row reflow)
     const Row row = BuildRows(state);
     const int totalButtons = row.count;
+    if (paintedBackdrop) {
+        // Main content is a slightly brighter surface over the same acrylic. Stop before the
+        // footer seam so that the ribbon retains the original material and the seam darkens it.
+        FillBlend(paint, base, widthPx, heightPx, 0, 0, widthPx,
+                  Sc(FooterDividerY(totalButtons), dpi), p.acrylicBodyWash);
+    }
     const int captionH = Sc(kCaptionH, dpi);
     for (int i = 0; i < totalButtons; i++) {
         const Rect t = TileRect(i, dpi, totalButtons);
@@ -922,15 +927,13 @@ void PaintPanel(HDC dc, int widthPx, int heightPx, const PanelState& state, int 
 
     // ---- 8. divider + distinct bottom dock bar
     y = Sc(FooterDividerY(totalButtons), dpi);
-    FillBlend(paint, base, widthPx, heightPx, 0, y, widthPx, Sc(kSepH, dpi), p.divider);
+    FillBlend(paint, base, widthPx, heightPx, 0, y, widthPx, Sc(kSepH, dpi), p.footerDivider);
 
     const int footY = Sc(FooterY(totalButtons), dpi);
     const int footH = Sc(kFooterHeight, dpi);
-    // Bottom dock bar. Over the material there is **no** plate at all: the divider above it is what
-    // separates the footer in Windows, and the footer keeps the toolbar's own acrylic untouched. A
-    // white veil used to sit here (14/255, after 18/255 and 9/255 before it) and it always read as a
-    // lighter band - the user's "ribbon too light" report. Without the material there is nothing to
-    // keep, so the flat plate uses the measured #222222 dock colour. Kept on 2026-11-01.
+    // The footer keeps the bare acrylic. Its darker appearance comes from the main surface wash
+    // above, plus the dark seam, as seen in the user's Windows crop. The earlier claim that a
+    // divider alone matched that reference was wrong. Without acrylic retain the flat dock plate.
     if (!paintedBackdrop) {
         FillBlend(paint, base, widthPx, heightPx, 0, footY, widthPx, footH, p.dock);
     }
@@ -944,7 +947,7 @@ void PaintPanel(HDC dc, int widthPx, int heightPx, const PanelState& state, int 
     DrawTextA(paint, base, widthPx, heightPx, L"Idle Dimmer",
               Rect{ padX, footY + Sc(11, dpi), statW, Sc(15, dpi) },
               p.text, p.base, FW_SEMIBOLD, Sc(12, dpi), DT_LEFT);
-    DrawTextA(paint, base, widthPx, heightPx, L"v1.0.0",
+    DrawTextA(paint, base, widthPx, heightPx, L"v1.0.1",
               Rect{ padX, footY + Sc(28, dpi), statW, Sc(13, dpi) },
               Mix(p.textDim, p.base), p.base, FW_NORMAL, Sc(10, dpi), DT_LEFT);
 
@@ -975,6 +978,53 @@ void PaintPanel(HDC dc, int widthPx, int heightPx, const PanelState& state, int 
     SelectObject(paint, prevBmp);
     DeleteDC(paint);
     DeleteObject(tmp);
+}
+
+// Render over black and white to recover coverage, including GDI's grayscale text edges.
+// This retains the existing SVG masks and all hit geometry, while leaving empty panel body clear.
+HBITMAP PaintPanelOverlay(int widthPx, int heightPx, const PanelState& state, int dpi) {
+    if (widthPx <= 0 || heightPx <= 0) return nullptr;
+    BITMAPINFO bi = {};
+    bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+    bi.bmiHeader.biWidth = widthPx;
+    bi.bmiHeader.biHeight = -heightPx;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    HDC dc = CreateCompatibleDC(nullptr);
+    if (!dc) return nullptr;
+    BYTE *black = nullptr, *white = nullptr;
+    HBITMAP result = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, (void**)&black, nullptr, 0);
+    HBITMAP whiteResult = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, (void**)&white, nullptr, 0);
+    bi.bmiHeader.biWidth = 1; bi.bmiHeader.biHeight = -1;
+    DWORD *blackPixel = nullptr, *whitePixel = nullptr;
+    HBITMAP blackBase = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, (void**)&blackPixel, nullptr, 0);
+    HBITMAP whiteBase = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, (void**)&whitePixel, nullptr, 0);
+    bool ok = result && whiteResult && blackBase && whiteBase && black && white;
+    if (ok) {
+        *blackPixel = 0xFF000000; *whitePixel = 0xFFFFFFFF;
+        HGDIOBJ old = SelectObject(dc, result);
+        PaintPanel(dc, widthPx, heightPx, state, dpi, blackBase);
+        SelectObject(dc, whiteResult);
+        PaintPanel(dc, widthPx, heightPx, state, dpi, whiteBase);
+        GdiFlush();
+        SelectObject(dc, old);
+        for (size_t i = 0; i < (size_t)widthPx * heightPx; i++) {
+            BYTE* b = black + i * 4;
+            BYTE* w = white + i * 4;
+            int difference = 0;
+            for (int c = 0; c < 3; c++) if (w[c] - b[c] > difference) difference = w[c] - b[c];
+            const BYTE alpha = (BYTE)(255 - difference);
+            for (int c = 0; c < 3; c++) if (b[c] > alpha) b[c] = alpha;
+            b[3] = alpha;
+        }
+    }
+    if (whiteBase) DeleteObject(whiteBase);
+    if (blackBase) DeleteObject(blackBase);
+    if (whiteResult) DeleteObject(whiteResult);
+    DeleteDC(dc);
+    if (!ok && result) { DeleteObject(result); result = nullptr; }
+    return result;
 }
 
 // ---------------------------------------------------------------------------

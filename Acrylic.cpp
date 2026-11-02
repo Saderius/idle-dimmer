@@ -1,5 +1,5 @@
-// Live acrylic implementation: capture what is behind the panel, blur it, tint it, publish it as
-// the panel's background. See Acrylic.h for why this exists and what it costs.
+// Software compatibility implementation. NativeBackdrop.cpp is the preferred renderer.
+// The formula comments below record the former software experiments, not a verified shell recipe.
 #include "Acrylic.h"
 
 #include <stdio.h>
@@ -684,26 +684,6 @@ bool SaveBitsToBmp(const void* bgraTopDown, int w, int h, const wchar_t* bmpPath
     surface.w = w;
     surface.h = h;
     return WriteBmp(surface, bmpPath);   // WriteBmp reads only bits/w/h
-}
-
-// Capture a screen region verbatim. Same pipeline as the blur but with no downscale and no tint.
-bool CaptureRegionToBmp(const RECT& screenRect, const wchar_t* bmpPath) {
-    const RECT bounds = { GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN),
-                          GetSystemMetrics(SM_XVIRTUALSCREEN) + GetSystemMetrics(SM_CXVIRTUALSCREEN),
-                          GetSystemMetrics(SM_YVIRTUALSCREEN) + GetSystemMetrics(SM_CYVIRTUALSCREEN) };
-    const RECT rect = ClampRect(screenRect, bounds);
-    const int w = rect.right - rect.left, h = rect.bottom - rect.top;
-    if (w <= 0 || h <= 0) return false;
-    Surface surface;
-    if (!CreateSurface(surface, w, h)) return false;
-    HGDIOBJ old = SelectObject(surface.dc, surface.bmp);
-    HDC screen = GetDC(nullptr);
-    const BOOL ok = BitBlt(surface.dc, 0, 0, w, h, screen, rect.left, rect.top, SRCCOPY | CAPTUREBLT);
-    ReleaseDC(nullptr, screen);
-    SelectObject(surface.dc, old);
-    const bool wrote = ok && WriteBmp(surface, bmpPath);
-    DestroySurface(surface);
-    return wrote;
 }
 
 }  // namespace acrylic

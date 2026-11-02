@@ -43,7 +43,8 @@ $codeFiles = @(
     'SessionStats.h', 'SessionStats.cpp',
     # The guard predicate lives in a header of its own so --self-test can pin the
     # maximised-window regression. A gate that did not scan it would not see a change to it.
-    'ScreenGuard.h'
+    'ScreenGuard.h', 'DisplayPower.h', 'Acrylic.h', 'Acrylic.cpp',
+    'NativeBackdrop.h', 'NativeBackdrop.cpp', 'NativeCompositionAbi.h', 'tools\build-acrylic-noise.ps1'
 ) | Where-Object { Test-Path $_ }
 
 $code = ($codeFiles | ForEach-Object { Get-Content $_ -Raw }) -join "`n"
@@ -75,6 +76,26 @@ function Test-Historical {
 # deriving them from code would flag every local variable. This list is the reviewer's
 # contract - add a term here when you add a mechanism.
 $liveTerms = @(
+    'CreateHostBackdropBrush', # preferred OS backdrop, no screen capture
+    'PrepareFirstFrame',             # finish GPU uploads and commit before revealing any frame
+    'RequestCommitAsync',
+    'D3D11_QUERY_EVENT',
+    'DWMWA_CLOAK',                   # host border/shadow remain hidden during preparation
+    'IUIAnimationManager',           # move the entire HWND, including the DWM frame
+    'UI_ANIMATION_IDLE_BEHAVIOR_DISABLE',
+    'kAnimationUpdateMessage',       # single UI-thread position authority for native slide
+    'panelOpening',                  # guard all preparation, release before the visible entrance ends
+    'TaskbarForMonitor',             # place behind the matching taskbar without activating either window
+    'kNativeSlideTravel',            # source parameters approximating the user's recording
+    'kAnimationCompleteMessage',     # tagged completion drives final hide, no frame timer
+    'AcrylicNoiseData.h',      # original texture embedded in the executable
+    'CreateDispatcherQueueController', # required before activating the native Compositor
+    'ShutdownQueueAsync',    # compositor queue drains and the worker joins on hide
+    'PaintPanelOverlay',     # transparent controls retain GDI text/icon coverage
+    'acrylicBodyWash',       # main surface lift ends before the bare acrylic footer
+    'footerDivider',         # dark footer seam has its own colour, not the shared light rule
+    'DXGI_ALPHA_MODE_PREMULTIPLIED',
+    'WS_EX_NOREDIRECTIONBITMAP',
     'WH_MOUSE_LL',        # click-away dismissal
     'ScheduleNext',       # adaptive wake scheduling
     'ResolveTrayGesture', # tray gesture collapsing
@@ -109,7 +130,7 @@ $liveTerms = @(
     'ProgressFillWidth'       # power-card bar: session dimmed time / process uptime, clamped, pure
     'lastDimKnown'            # last-dim clock stamp is missing/usable, separate from dim history
     'restoreCount'            # the card's "Wake count" source: restores from the dimmed state
-    'v1.0.0'                 # footer version hint beneath the app name
+    'v1.0.1'                 # footer version hint beneath the app name
     'dimmingFilled'          # enabled Dimming tile's filled bulb SVG alpha mask
     'gDimFilled'             # enabled panel bulb with transparent separator around its inset fill
     "on  = 'tray-dimmer-pick4SingleChevron-separated.svg'" # tray bulb outline separated from its fill
@@ -136,7 +157,13 @@ $liveTerms = @(
     'AnyActive'               # the fallback's entry point, called only when SMTC is silent
     'MediaInUse'              # the single decision site: SMTC first, audio fallback second
     'WASAPI'                  # the API family the fallback reads; docs must name it
-    'SC_MONITORPOWER'         # display standby request: how the displays are switched off
+    'displaypower::Session',  # pure off-session ownership, no overlapping idle decisions
+    'kManualSettleMs',        # manual pre-off settle, not input blocking after off
+    'kDisplayOffApply',       # stale posted work rejected by session generation
+    'kDisplayOffDelayTimer',
+    'DefWindowProcW',         # one OS power command on our own window, no broadcast fan-out
+    '-NoRun',                # explicit build-only workflow; never execute the app
+    'SC_MONITORPOWER'          # display standby request: how the displays are switched off
     'OffDisplays'             # the standby request + the keeps-awake handover
     'OffMinutes'              # the displays-off delay in settings.ini
     'StartOffInsteadOfDim'    # the "skip the dim" path; docs must say where the decision happens
@@ -146,7 +173,6 @@ $liveTerms = @(
     '--acrylic-test'          # pipeline self-check with measurable before/after detail
     '--panel-shot'            # renders the panel to a BMP, the only way to see it as an image
     '--acrylic-pause'         # freeze the material and clear the exclusion so screenshots work
-    'Ctrl+Alt+S'              # the keyboard form of --acrylic-pause; docs must say how to screenshot
     'SetThreadDesktop'        # the worker must be on WinSta0\Default or it captures a blank desktop
     'ProtectSound'            # the Sound switch: audio-rendering protection, separate from Media
     'hitTileSound'            # the tile that toggles it
@@ -173,6 +199,13 @@ foreach ($t in $liveTerms) {
 # Literal assertions that were true once and are now false. Add one here the moment a
 # mechanism is replaced.
 $staleClaims = @(
+    'dims first when nothing is dimmed, then switches the displays off immediately',
+    'only a successful DDC wake write brings',
+    'Tray submenu offers 1/2/5/10/15/30 minutes', # presets now belong to the panel slider
+    'Also available as **Ctrl+Alt+S**', # obsolete global screenshot shortcut removed
+    'Live material is therefore unavailable to an unpackaged Win32',
+    'Windows.UI.Composition cannot even be started unpackaged here',
+    'The source has no exceptions/RTTI and creates no threads',
     'checking every 30 seconds',
     'footer shows the battery percentage',
     'session/battery info',

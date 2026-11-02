@@ -2,7 +2,7 @@
 # build dependency this project wants: a fresh clone with no generated icons would otherwise
 # launch a browser ~30 times inside the build. The generated artifacts are committed, so CI
 # compiles the same bytes a contributor gets without invoking Edge at all.
-param([switch]$SkipIconRender)
+param([switch]$SkipIconRender, [switch]$NoRun)
 
 $ErrorActionPreference = 'Stop'
 $compiler = Join-Path $PSScriptRoot 'build-tools\zig-x86_64-windows-0.15.2\zig.exe'
@@ -28,6 +28,7 @@ if (-not (Test-Path $compiler)) {
 $exePath = Join-Path $PSScriptRoot 'IdleDimmer.exe'
 $wasRunning = $false
 if (Get-Process IdleDimmer -ErrorAction SilentlyContinue) {
+    if ($NoRun) { throw '-NoRun: app is running; refusing to execute even --quit. Close it manually first.' }
     $wasRunning = $true
     Write-Host 'Idle Dimmer is running; asking it to exit before relinking (brightness is restored)...' -ForegroundColor Cyan
     Start-Process $exePath -ArgumentList '--quit' -Wait -NoNewWindow -ErrorAction SilentlyContinue
@@ -48,6 +49,9 @@ $excluded = @('ScreenOffProbe.cpp')
 $srcs = Get-ChildItem $PSScriptRoot -Filter '*.cpp' |
         Where-Object { $excluded -notcontains $_.Name } |
         Select-Object -ExpandProperty FullName
+# Native acrylic's original noise texture is embedded, so a copied executable keeps its material.
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'tools\build-acrylic-noise.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Acrylic noise embedding failed' }
 # Panel glyphs are antialiased alpha masks, not integer GDI line art. This runs before the
 # compile because Flyout.cpp includes the generated header, and it caches on timestamps.
 if (-not $SkipIconRender) {
@@ -56,7 +60,7 @@ if (-not $SkipIconRender) {
 } elseif (-not (Test-Path (Join-Path $PSScriptRoot 'PanelIconsData.h'))) {
     throw 'PanelIconsData.h is missing and -SkipIconRender was given; run build.ps1 without the switch once.'
 }
-& $compiler cc -x c++ -target x86_64-windows-gnu -std=c++17 -Os -fno-exceptions -fno-rtti -ffunction-sections -fdata-sections '-Wl,--gc-sections' '-Wl,--subsystem,windows' -s -municode @srcs -o (Join-Path $PSScriptRoot 'IdleDimmer.exe') -lole32 -loleaut32 -lwbemuuid -lapi-ms-win-core-winrt-l1-1-0 -lapi-ms-win-core-winrt-string-l1-1-0 -lshell32 -luser32 -lgdi32 -ladvapi32 -lwtsapi32 -ldwmapi
+& $compiler cc -x c++ -target x86_64-windows-gnu -std=c++17 -Os -fno-exceptions -fno-rtti -ffunction-sections -fdata-sections '-Wl,--gc-sections' '-Wl,--subsystem,windows' -s -municode @srcs -o (Join-Path $PSScriptRoot 'IdleDimmer.exe') -lole32 -loleaut32 -lwbemuuid -lapi-ms-win-core-winrt-l1-1-0 -lapi-ms-win-core-winrt-string-l1-1-0 -lshell32 -luser32 -lgdi32 -ladvapi32 -lwtsapi32 -ldwmapi -ld3d11 -ldxgi -lwindowscodecs -luuid
 if ($LASTEXITCODE -ne 0) { throw 'Native build failed' }
 # Embed the tray icon as the executable's main application icon (RT_ICON + RT_GROUP_ICON).
 # This is design 4 (bulb and single chevron), the user's chosen app identity, but generated from
@@ -87,7 +91,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Docs/code consistency check failed; run tools\
 Get-Item -LiteralPath $exePath | Select-Object Name,Length
 # Re-deploy what was running before the build. AGENTS.md section 1: a build that leaves the
 # app closed has not been delivered, and the user is the one who has to audit it.
-if ($wasRunning) {
+if ($wasRunning -and -not $NoRun) {
     Write-Host 'Relaunching Idle Dimmer...' -ForegroundColor Cyan
     Start-Process $exePath -WorkingDirectory $PSScriptRoot -WindowStyle Hidden
 }

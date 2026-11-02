@@ -218,6 +218,8 @@ constexpr Color onAccentLight(){ return RGBc(0xFF, 0xFF, 0xFF); }
 // sets those itself and restores nothing, because the only callers are the panel window
 // and the headless renderer, and each creates a fresh DC per paint.
 void PaintPanel(HDC dc, int widthPx, int heightPx, const PanelState& state, int dpi, HBITMAP backdrop = nullptr);
+// Transparent premultiplied BGRA controls for the native compositor. Caller deletes the bitmap.
+HBITMAP PaintPanelOverlay(int widthPx, int heightPx, const PanelState& state, int dpi);
 // Screen-rect point containment, used by the WH_MOUSE_LL click-away hook in IdleDimmer.cpp.
 // Deliberately the Win32 half-open convention: left/top inclusive, right/bottom exclusive, so
 // two abutting rects never both claim a point and a click exactly on the window border belongs

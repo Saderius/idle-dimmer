@@ -1,6 +1,10 @@
 # Case file: the acrylic background colour (2026-11-01)
 
-**Status: OPEN.** The panel body colour has been "fixed" four times and still reads wrong to the user.
+**Status:** sections 1–7 record the HISTORICAL software-colour investigation at checkpoint
+`3ec8c43`. [Section 8](#8-native-composition-and-footer-follow-up-2026-11-01) records the subsequent
+native material and ribbon adjustment. The user described the native material as "kinda good";
+visual acceptance of the latest ribbon adjustment remains pending. At the software checkpoint,
+the panel body colour had been "fixed" four times and still read wrong to the user.
 This file freezes what is *verified* so the next attempt starts from evidence instead of a guess.
 
 Trigger, verbatim: *"how come we completely missed the colors of the background again? how is that even
@@ -338,6 +342,89 @@ opacities and chroma roughly doubles - but **it is not evidence about what the u
 the build that they called "really, really close to native" had 0.50 and the extra steps. Do not treat
 "more chroma" as progress; it was tried and rejected within the hour.
 
+## 8. Native composition and footer follow-up (2026-11-01)
 
+This section supersedes sections 1–7 as guidance for the preferred renderer. The former software
+pipeline is retained only for failed native initialization; its history above is not a verified
+recipe for the shell. Current mechanism: [IMPLEMENTATION.md section 9.4](../../IMPLEMENTATION.md#94-native-desktop-acrylic-nativebackdropcpp).
 
+### 8.1 What changed, and what the user actually confirmed
 
+Windows host-backdrop composition now supplies the material behind transparent controls, with
+Microsoft's original noise asset embedded at its original pixel scale. Creating a DispatcherQueue
+before the Compositor on the interactive desktop succeeded; the earlier claim that composition
+necessarily required package identity was wrong. MEASURED 2026-11-01: native initialization returned
+`S_OK` and runtime status reported the native renderer active.
+
+The user's visual response to that running native build was "it looks kinda good", followed by a
+specific comparison of the ribbon and divider. This is positive feedback about the native material,
+not acceptance of a pixel-identical shell implementation or of the subsequent adjustment.
+
+### 8.2 Preserved evidence and reproducible sampling
+
+These are the user's supplied PNGs, copied without alteration. They predate the ribbon adjustment.
+
+Windows Quick Settings:
+
+![Windows footer reference](assets/acrylic-2026-11-01/windows-footer.png)
+
+Idle Dimmer, before the ribbon adjustment:
+
+![Idle Dimmer footer before adjustment](assets/acrylic-2026-11-01/idle-dimmer-footer-before-adjustment.png)
+
+**MEASURED 2026-11-01 from these images.** Coordinates are zero-based in each cropped PNG; every
+sample spans x=220 through x=379 inclusive. The body rectangles use Windows y=8..22 and app y=8..24;
+the divider uses Windows y=24..25 and app y=26..27; both footer samples use y=28..42. Samples avoid
+labels, icons, the card, and rounded outer corners. Means are rounded below; these rectangles are
+not registered to identical desktop coordinates.
+
+| Empty region | Windows mean RGB | App before adjustment mean RGB |
+|---|---|---|
+| Upper surface | (32.63, 54.54, 55.54) | (25.52, 47.52, 48.52) |
+| Divider | (22.29, 42.47, 43.45) | (44.50, 64.50, 65.50) |
+| Footer | (24.54, 47.52, 48.52) | (25.50, 47.50, 48.50) |
+
+The local transition is the evidence: Windows has a brighter upper section and dark divider;
+the app had essentially equal upper/footer values and a light divider. The earlier claim that
+the divider alone separates Windows' footer was wrong for this reference. The app's bare material
+was already close to the footer in these crops, so changing the entire acrylic tint would move
+both surfaces together and miss the relationship.
+
+### 8.3 Fitted blends and the deployed adjustment
+
+**INFERRED 2026-11-01 from the measured means:** fit the upper surface as a white source-over film
+on the footer using least squares across RGB. The equivalent alpha is approximately 8.76/255;
+fitting the seam as black over the footer gives approximately 26.44/255. These are effective blends
+for the supplied pixels, not proof of the shell's private brushes or universal theme tokens.
+
+**UNVERIFIED visually, implemented 2026-11-01:** the dark palette uses `acrylicBodyWash`, white at
+9/255, beneath the main controls, stopping before `FooterDividerY`. The footer keeps bare acrylic,
+and `footerDivider` uses black at 26/255. Other dividers keep their previous colour. The underlying
+native tint/luminosity/noise recipe, animation, and hidden lifetime are unchanged. Light theme
+keeps its previous footer-divider colour and receives no upper-surface wash because no light-theme
+reference was measured.
+
+**MEASURED 2026-11-01, deployed build:** self-test PASS with 2,128 checks; build/documentation gates
+PASS; executable 277,504 bytes; native composition active with HRESULT `0x00000000`. The pixel
+checks cover body-film transparency, a bare footer, a dark seam, premultiplied channels, and accent
+preservation. They do not establish visual fidelity. The hidden CPU samples in IMPLEMENTATION.md
+section 15 preceded this paint-only adjustment and have not been repeated for it.
+
+**Review update, 2026-11-02:** after the subsequent animation work, the user reported "it's better,
+but still needs polish" and deferred further polishing. This is an overall live-build verdict,
+not a specific confirmation of the ribbon colours. Their exact match remains **UNVERIFIED**.
+
+### 8.4 Animation follow-up and deferred polish — 2026-11-02
+
+The native material above is now hosted in a whole-window upward transition driven by Windows
+Animation Manager. A fade-only transition and then a client-subtree slide were rejected; the
+latter left a stationary frame visible while its content moved in. The current path cloaks the
+whole HWND during control upload and composition preparation, then reveals and moves the HWND.
+The user still reported a brief frame blink before later describing the build as better.
+Do not record that blink as fixed or the shell's visual behavior as matched.
+
+Temporary append-only presentation tracing remains for the next investigation. GPU fence and
+composition-commit completion are readiness evidence, not proof of a complete first visible
+frame. The measured timeline, implementation, validation results, and tracing cleanup requirement
+are maintained in [IMPLEMENTATION.md section 9.1](../../IMPLEMENTATION.md#91-panel-window-focus-and-click-away-dismissal)
+and the [current handoff](../HANDOFF-acrylic.md#current-handoff--2026-11-02).

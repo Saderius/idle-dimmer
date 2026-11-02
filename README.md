@@ -1,13 +1,15 @@
 # Idle Dimmer
 
-[![Build](https://github.com/Saderius/idle-dimmer/actions/workflows/build.yml/badge.svg)](https://github.com/Saderius/idle-dimmer/actions/workflows/build.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Size](https://img.shields.io/badge/binary-202%20KB-informational)](IMPLEMENTATION.md)
+App version: **1.0.1**.
+
+[![Build](https://github.com/Saderius/idle-dimmer/actions/workflows/build.yml/badge.svg)](https://github.com/Saderius/idle-dimmer/actions/workflows/build.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Size](https://img.shields.io/badge/binary-280%20KB-informational)](IMPLEMENTATION.md)
 
 **Dims your screen to black after two minutes of no input — not off, just dark — and restores your
 brightness instantly on any touch, key, click, or pen stroke.**
 
 ![Idle Dimmer interacting with its Quick Settings panel](docs/media/hero.gif)
 
-No installer, no runtime, no network. One 246 KB Win32 executable and a tray icon.
+No installer, no runtime, no network. A native Win32 executable and a tray icon.
 
 ---
 
@@ -40,12 +42,22 @@ running, the GPU keeps its surface, and the restore is immediate rather than a w
   Media detection uses Windows' media session list first, then falls back to "an application is
   rendering audio", so a browser that publishes no media session (media keys disabled) still
   protects playback.
-- **Live acrylic panel** — the panel blurs whatever is behind it, refreshed while it is open. The
-  Windows materials all degrade to a flat tint on this machine (measured), so the blur is the app's
-  own: capture, downscale, tint. `Acrylic=0` gives the plain plate. Default mode is a snapshot taken
-  before the panel appears (plus one refresh 350 ms later), so screenshots and recordings work
-  normally; `AcrylicLive=1` refreshes continuously, which makes capture tools report a "protected
-  app" — press **Ctrl+Alt+S** first in that mode. `--panel-shot` renders the panel to a file either way.
+- **Native acrylic panel** — Windows composition renders the desktop material behind transparent
+  controls. The renderer starts on open and shuts down on hide, with no hidden panel worker or
+  refresh timer. In dark mode, a subtle brighter main surface and dark divider distinguish the
+  ribbon below. **Live review, 2026-11-02:** the user described the completed revision as
+  "generally great!"; exact ribbon colour matching has not been separately measured.
+  `Acrylic=0` selects the opaque panel.
+  Native startup failures use the prior software fallback; `--status` reports the reason.
+- **Native upward entrance** — the complete window stays cloaked during GPU upload and composition preparation,
+  then Windows Animation Manager slides its frame, material, and controls up together from behind
+  the taskbar. Closing reverses the motion; the native timer is disabled at rest and released on hide.
+  Respects Windows' animation preference and tears down on hide. **Implementation update, 2026-11-02:**
+  re-entrant `ShowPanel` invocations are guarded, positioning updates route through `kAnimationUpdateMessage`
+  on the UI thread, and the flyout is ordered behind the target monitor's taskbar. **USER-REVIEWED
+  2026-11-02:** "generally great!" on the running revision. Exact native visual parity remains
+  **UNVERIFIED**. The mechanism is documented in `IMPLEMENTATION.md` section 9.1; temporary
+  presentation tracing was removed during cleanup on 2026-11-02.
 - **Sunset tray icon** — the sun in the tray descends toward the horizon as idle time accrues, so
   you can see how close the next dim is without opening anything.
 - **Five tray designs**, live previews, remembered across restarts.
@@ -53,10 +65,7 @@ running, the GPU keeps its surface, and the restore is immediate rather than a w
 - **Crash-safe** — the pre-dim brightness is written to disk before dimming, so a hard reset does
   not leave you at 0%.
 - **Never touches your input** - idle time comes from Windows' own `GetLastInputInfo` counter. The  app cannot see what you type, and raw-input notifications are only registered *while* dimmed.
-- **The acrylic blur reads the screen, in memory only** — while the panel is open it samples the
-  panel's own rectangle to blur it. Nothing is written to disk, nothing leaves the process, and
-  `Acrylic=0` turns it off entirely. If you need a picture of the panel itself, `--panel-shot`
-  renders one (the panel is deliberately excluded from ordinary screenshots while it is open).
+- **Screenshots work normally with native acrylic.** The desktop backdrop stays in Windows composition; the app does not capture it. The software live fallback can be frozen with `--acrylic-pause`; `--panel-shot` renders software fallback only. The app registers no global keyboard shortcuts.
 
 ## Install
 
@@ -82,7 +91,7 @@ Click the tray icon — left or right, there is only one UI — to open Quick Se
 - **Off at idle** — switch the displays off at the threshold instead of dimming them.
 - **Start at login** — the autostart Run-key entry.
 - **Power card** — wake count, last dim, and estimated display hours saved, persisted across runs.
-- **Footer** — turn the displays off now (monitor icon), dim immediately (crescent), open the app
+- **Footer** — turn the displays off after a five-second settling delay (monitor icon), dim immediately (crescent), open the app
   folder, quit (which always restores brightness first).
 
 The panel never takes keyboard focus. It is created `WS_EX_NOACTIVATE`, so it cannot steal the caret
@@ -120,7 +129,7 @@ This is the whole point of the project, so it is measured rather than asserted:
   poll. Roughly one wake per idle period instead of two per minute.
 - While dimmed, the raw-input sink catches input with no timer involved at all.
 - WMI brightness calls happen only at dim and restore, never on a wake tick.
-- No worker threads. The thread sleeps in the kernel while idle.
+- No panel worker threads while hidden. The UI thread sleeps in the kernel while idle.
 
 Current figures and how they were obtained: [`IMPLEMENTATION.md` §15](IMPLEMENTATION.md). Some older
 numbers in the git history are marked stale on purpose.
@@ -142,7 +151,7 @@ application icon, and then runs two gates that **fail the build**:
   string must be accounted for, and no stale claim may survive.
 
 ```powershell
-.\IdleDimmer.exe --self-test   # 2029 decision, layout, and pixel assertions
+.\IdleDimmer.exe --self-test   # MEASURED 2026-11-02: PASS, 2128 checks; not visual certification
 ```
 
 ## Command line
@@ -170,3 +179,11 @@ application icon, and then runs two gates that **fail the build**:
 ## License
 
 [MIT](LICENSE).
+
+**USER-CONFIRMED 2026-11-02:** after the monitor-loop fix, the user reported that manual
+off/wake behavior generally works correctly on the running desktop build. Manual off bypasses
+brightness access, settles before one OS power request, and waits for fresh meaningful input.
+Its pending/off session pauses ordinary idle/media decisions. Temporary transition logging was
+removed before committing. Surface and broader hardware compatibility remain unverified.
+`build.ps1 -NoRun` builds without executing or relaunching the app. See IMPLEMENTATION.md
+section 5.1 and `docs/research/2026-11-02-display-off-loop.md`.

@@ -1,0 +1,25 @@
+GEMINI 3.8 FLASH HIGH REASSESSMENT, 2026-11-02. The proposed anchoring/margin explanation remains unproven; see the local assessment.
+
+The measured 22-pixel vertical translation between PTS 3.833333 and 3.866667 is an undeniable, frame-accurate observation that refutes my earlier skepticism regarding screenshot cropping artifacts. Concurrently, attributing the 1-pixel trace discrepancy to floating-point truncation was an error, as `SWP_ASYNCWINDOWPOS` naturally creates an asynchronous lag where `GetWindowRect` samples the pre-move coordinate before the window manager executes the queued move. Speculation regarding Windows shell internal composition mechanics is formally retracted, retaining only the directly observable occlusion contrast against the taskbar. The primary finding—re-entrant `ShowPanel` execution causing mid-flight renderer teardown and visual uncloaking—remains robustly proven, but isolating the 22-pixel jump now requires targeted instrumentation around anchor evaluation.
+
+### Revised vs. Supported Claims
+
+1. **Late Position Jump (Revised — Supported Observation):**
+   The frame-accurate 22-pixel jump (from $y=106\dots859$ to $y=84\dots837$) at PTS 3.866667 and the 9-pixel shift at PTS 1.700000 are accepted as proven geometric facts. The crop ambiguity of the static clipboard stills does not negate the decoded frame-sheet telemetry.
+2. **WAM Floating-Point Rounding (Retracted):**
+   Retracted. In [`NativeBackdrop.cpp:266-270`](file:///G:/GitHub/idle-dimmer/NativeBackdrop.cpp#L266-L270), `OnPostUpdate` explicitly assigns `const int y = done ? finalY : ...` prior to `SetWindowPos`. The $1298 \to 1297$ trace difference is an artifact of logging the uncommitted window position immediately after queuing an asynchronous move (`SWP_ASYNCWINDOWPOS`), not mathematical truncation.
+3. **Shell Internals (Retracted):**
+   Retracted. The claim that the shell animates internal composition visuals rather than a window was an ungrounded hypothesis. The only verified visual ground truth is that the shell flyout emerges occluded by `Shell_TrayWnd`, whereas the app renders over it.
+4. **Re-entry Root Cause (Clarified):**
+   Double `ShowPanel begin` and renderer teardown/rebuild are verified trace facts. However, attributing the trigger to specific notification codes (e.g. `NIN_SELECT` vs. double `WM_LBUTTONUP`) remains a hypothesis until notification codes are logged.
+
+### Evidence Needed to Isolate the 22-Pixel Jump
+
+The 22-pixel jump suspiciously matches typical taskbar/monitor margin deltas (such as [`ReserveTaskbarSpace`](file:///G:/GitHub/idle-dimmer/IdleDimmer.cpp#L1911) or `kNativeSlideTravel` scaling). To isolate its cause:
+- **Trace Window Positioning Calls:** Log caller identity, thread ID, and target coordinates for every `SetWindowPos` call affecting `panelWindow` between PTS 2.9 and 4.0.
+- **Trace Re-anchoring:** Instrument [`AnchorPanel`](file:///G:/GitHub/idle-dimmer/IdleDimmer.cpp#L1921) inputs (`work.top`, `usable.y`, `dpi`, `bc`) across both openings to determine whether work-area resolution mutates dynamically when the panel takes or drops interaction.
+
+### Updated Priority Order
+1. **Prevent Re-entrant Open / Teardown:** Block duplicate `ShowPanel` invocations to eliminate the skeleton flash.
+2. **Resolve Layout Anchoring Instability:** Fix the 22-pixel translation by stabilizing `panelTarget` calculations across animation completion and timer ticks.
+3. **Correct Taskbar Occlusion Plane:** Prevent the flyout from floating in front of the taskbar during ascent.

@@ -1,17 +1,9 @@
-// Live acrylic for the panel, done with GDI and a screen capture.
-//
-// WHY THIS FILE EXISTS AND WHAT IT IS NOT
-//
-// Three native routes to Windows' live material were measured on this machine and all failed
-// (IMPLEMENTATION.md §9.3, MEASURED 2026-11-01):
-//
-//   legacy accent policy      -> flat fill (no backdrop at all)
-//   DWMWA_SYSTEM_BACKDROP_TYPE over a DComp swapchain -> constant tint, zero variance
-//   Windows.UI.Composition    -> ActivateInstance returns E_ACCESSDENIED for an unpackaged process
-//
-// So "live" here is ours: capture the pixels behind the panel, blur them, tint them, and paint the
-// result as the panel's background. It refreshes while the panel is open and stops when it closes,
-// which is the rule this project cares about - nothing runs when the UI is absent.
+// Software acrylic compatibility fallback, using GDI and a screen capture.
+// NativeBackdrop.cpp is preferred: native Composition activation works when initialized with
+// a DispatcherQueue on the interactive desktop (MEASURED 2026-11-01). The earlier conclusion that
+// an unpackaged app could not use it was wrong; see IMPLEMENTATION.md section 9.4.
+// This module retains the rejected software material only for native initialization failures.
+// Its snapshot/live modes still stop on hide; neither is evidence of a native colour match.
 //
 // The capture must not include the panel, or the blur would feed on its own output and smear.
 // WDA_EXCLUDEFROMCAPTURE removes the window from capture APIs, measured working here (255 -> 71.5
@@ -97,11 +89,6 @@ struct ProbeStats {
     double fineBefore, coarseBefore, fineAfter, coarseAfter, meanBefore, meanAfter;
 };
 bool Probe(const RECT& screenRect, int widthPx, int heightPx, const wchar_t* bmpPath, ProbeStats* out);
-
-// Capture a screen region verbatim to a BMP. Used by --panel-shot so the panel's own appearance can
-// be inspected on disk; with the capture exclusion active that shows what is behind the panel, so
-// the exclusion can be suppressed for the debug run with IDLE_DIMMER_NO_EXCLUSION=1.
-bool CaptureRegionToBmp(const RECT& screenRect, const wchar_t* bmpPath);
 
 // Write a top-down 32bpp BGRA buffer to a BMP. Used by --panel-shot to save a headless render of
 // the panel: the panel cannot be screen-captured conventionally (it excludes itself), so the only

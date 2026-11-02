@@ -1,0 +1,86 @@
+ARCHIVED GEMINI 3.8 FLASH HIGH REVIEW, 2026-11-02. Contains disputed/superseded claims; see 2026-11-02-gemini-flash-animation-critique.md for the local assessment.
+
+### Independent Critique: Visual Evidence & Presentation Trace Analysis
+
+Visual inspection confirms that Idle Dimmer displays an unrendered, translucent skeleton frame above the taskbar prior to animation, whereas Windows native Quick Settings emerges smoothly from behind the taskbar with all materials and controls fully intact. Presentation trace analysis conclusively proves a re-entrant `ShowPanel` invocation on the main thread, causing an immediate teardown (`native Stop`) and rebuild (`native Start`) of the composition tree while the initial window is already uncloaked. The app’s taskbar occlusion defect is rooted in animating a floating `HWND_TOPMOST` window across the taskbar plane rather than clipping beneath the taskbar shell. Finally, while the initial flash and composition churn are definitively confirmed by trace timestamps, the exact mechanism behind the alleged late position jump remains an unproven hypothesis due to confounding screenshot crop boundaries.
+
+---
+
+### 1. Inspected Media and Limitations
+
+#### Artifacts Inspected Directly (via Multimodal `read_file`)
+- **Extracted Frame Sheets:**
+  - [`comparison.png`](file:///G:/GitHub/idle-dimmer/build-tools/animation-comparison-2026-11-02/comparison.png) (Windows top row vs. App bottom row)
+  - [`app-first-open.png`](file:///G:/GitHub/idle-dimmer/build-tools/animation-comparison-2026-11-02/app-first-open.png) (App opening progression)
+  - [`windows-first-open.png`](file:///G:/GitHub/idle-dimmer/build-tools/animation-comparison-2026-11-02/windows-first-open.png) (Windows opening progression)
+  - [`late-positions.png`](file:///G:/GitHub/idle-dimmer/build-tools/animation-comparison-2026-11-02/late-positions.png) (App settling and subsequent reopen)
+  - [`clip1-overview.png`](file:///G:/GitHub/idle-dimmer/build-tools/animation-comparison-2026-11-02/clip1-overview.png) & [`clip2-all-frames.png`](file:///G:/GitHub/idle-dimmer/build-tools/animation-comparison-2026-11-02/clip2-all-frames.png)
+- **User Still Screenshots:**
+  - `codex-clipboard-53b1ac63-a5fb-47e3-af58-24b83247b555.png` (Empty skeleton / frame)
+  - `codex-clipboard-37378468-a9b9-42d5-af8d-f5ba2687577e.png` (Settled state A)
+  - `codex-clipboard-208c2251-cf33-40d9-8423-4291175a1093.png` (Settled state B)
+- **Code & Diagnostics:**
+  - [`IdleDimmer.cpp`](file:///G:/GitHub/idle-dimmer/IdleDimmer.cpp), [`NativeBackdrop.cpp`](file:///G:/GitHub/idle-dimmer/NativeBackdrop.cpp), [`TrayGesture.h`](file:///G:/GitHub/idle-dimmer/TrayGesture.h), and [`presentation-trace.log`](file:///G:/GitHub/idle-dimmer/presentation-trace.log) / `gemini-source-evidence.txt`.
+
+#### Inspection Limitations
+Under strict read-only execution constraints, raw `.mp4` container streams were not directly decoded or played back in real time; visual analysis relies on high-resolution extracted PNG contact sheets and static clipboard captures. Automated programmatic pixel-differencing scripts were not permitted by permission checks, so image geometry was assessed through direct visual inspection.
+
+---
+
+### 2. Windows vs. App Visual Comparison Table
+
+| Attribute | Windows 11 Quick Settings | Idle Dimmer Flyout |
+| :--- | :--- | :--- |
+| **First Visible State** | Clean, fully composed surface emerging at `00:00:00.187`. No intermediate visual states. | Translucent, empty skeleton card appears at `00:00:00.733`–`00:00:00.767`, disappears at `00:00:00.800`, then reappears dark at `00:00:00.900`. |
+| **Taskbar Occlusion** | **Behind taskbar.** Lower edge of flyout is occluded by the taskbar during ascent (`00:00:00.187`–`00:00:00.320`). | **In front of taskbar.** Lower edge of flyout visibly covers taskbar icons during ascent (`00:00:00.900`–`00:00:00.967`). |
+| **Component Sync** | Material, borders, tile glyphs, and sliders appear together simultaneously on frame 1. | Desynchronized: DWM frame/acrylic plate appears first as a hollow shell; controls appear only after recreation. |
+| **Motion Curve** | Single smooth upward slide lasting ~200–230 ms (`00:00:00.187` to `00:00:00.420`). | Stutter/pause: flash at 733 ms, black out at 800 ms, upward motion from 900 ms to 1000 ms (~100 ms active slide). |
+| **Settling** | Decelerates into resting position with static bottom margin above taskbar. | Snaps into final position at 1000 ms; potential sub-pixel or 1–2 px layout realignment thereafter. |
+
+---
+
+### 3. Independent Code & Trace Diagnosis
+
+#### A. Re-entrant `ShowPanel` & Immediate Teardown/Rebuild Loop (**High Confidence**)
+- **Source Facts:**
+  - [`IdleDimmer.cpp:1898`](file:///G:/GitHub/idle-dimmer/IdleDimmer.cpp#L1898): `ShowPanel begin` is logged.
+  - In `presentation-trace.log` (lines 554–555), `ShowPanel begin` is logged **twice within 2,485 QPC ticks (~0.25 ms)** on UI Thread ID `32584` (`visible=0`).
+  - At line 576, the worker thread uncloaks the window via [`NativeBackdrop.cpp:702`](file:///G:/GitHub/idle-dimmer/NativeBackdrop.cpp#L702) (`Reveal begin`, `dwmCloaked=0`).
+  - **14 ms later** (trace line 582), the UI thread executes `native Stop begin` followed immediately by `native Start begin` (line 584), which re-applies the cloak (`preparation cloak applied`, line 585).
+- **Diagnosis:**
+  When the tray icon is clicked, two gesture notifications pass initial filters before `panelWindow` becomes visible. The first `ShowPanel` builds and reveals a DirectComposition tree. The second re-entrant call immediately tears down the active swapchain/compositor via [`nativebackdrop::Start()`](file:///G:/GitHub/idle-dimmer/NativeBackdrop.cpp#L630) calling [`Stop()`](file:///G:/GitHub/idle-dimmer/NativeBackdrop.cpp#L631). The "empty skeleton" captured in `codex-clipboard-53b1ac63` is the uncloaked, unpopulated DWM plate exposed during this race before the second swapchain finishes rendering.
+
+#### B. HWND Z-Order and Taskbar Occlusion (**High Confidence**)
+- **Source Facts:**
+  - [`IdleDimmer.cpp:1970`](file:///G:/GitHub/idle-dimmer/IdleDimmer.cpp#L1970): `SetWindowPos(panelWindow, HWND_TOPMOST, r.x, y, r.w, r.h, SWP_SHOWWINDOW | SWP_NOACTIVATE);`
+  - [`NativeBackdrop.cpp:269`](file:///G:/GitHub/idle-dimmer/NativeBackdrop.cpp#L269): WAM updates move the entire top-level HWND using `SetWindowPos(g.panel, nullptr, g.anchorX, y, ..., SWP_ASYNCWINDOWPOS)`.
+- **Diagnosis:**
+  Because the window is `HWND_TOPMOST`, moving the physical HWND downwards over the taskbar coordinates forces it to render over the taskbar. The Windows shell does not slide an external `HWND_TOPMOST` window over its own tray; it animates composition visuals or clips behind `Shell_TrayWnd`.
+
+---
+
+### 4. Gaps and Overclaims: The Late Position Jump
+
+- **Observation:**
+  Comparing `codex-clipboard-37378468` and `codex-clipboard-208c2251`, the flyout card appears slightly shifted relative to the crop edges.
+- **Overclaim Risk:**
+  Attributing this shift entirely to a late runtime window jump is an overclaim. The outer pixel dimensions and bounding crops of those two clipboard images differ, meaning relative visual translation cannot be proven from the still images alone.
+- **Plausible Hypothesis:**
+  In [`IdleDimmer.cpp:1655`](file:///G:/GitHub/idle-dimmer/IdleDimmer.cpp#L1655), upon receiving `kAnimationCompleteMessage`, the main thread calls:
+  ```cpp
+  SetWindowPos(h, nullptr, panelTarget.x, panelTarget.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+  ```
+  In `presentation-trace.log` line 549 vs 550 (and line 614), WAM completes at `rect.top = 1298`, whereas `panelTarget.y` is `1297`. If WAM's floating-point interpolation truncates or rounds 1 pixel short of target, the completion handler snaps the window by 1 px. However, a multi-pixel "late jump" during an uninterrupted session remains **unproven**.
+
+---
+
+### 5. Recommended Priority Order for Fixes
+
+1. **Eliminate `ShowPanel` Re-entrancy & Enforce Single-Open Invariant:**
+   Guard `ShowPanel()` against concurrent or secondary invocations while opening/entering (`panelEntering` guard). Prevent multiple tray notifications from triggering parallel initialization pipelines.
+2. **Synchronize DWM Cloak with Completed Composition:**
+   Never call `Reveal()` until the initial swapchain render is completely committed, uploaded, and ready to present. Do not uncloak and re-cloak across consecutive frames.
+3. **Correct Taskbar Clipping / Z-Ordering:**
+   Do not animate a `HWND_TOPMOST` window over the taskbar rectangle. Either place the window behind `Shell_TrayWnd` during entrance or clip the composition visual within a static window rect.
+4. **Reconcile WAM End-Position Rounding with Final Snap:**
+   Ensure WAM's `finalY` integer calculation strictly matches `panelTarget.y` to eliminate the 1-pixel snap on `kAnimationCompleteMessage`.

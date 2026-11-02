@@ -34,13 +34,14 @@
 // panel; on a desktop it answers WBEM_E_NOT_SUPPORTED and previously nothing dimmed at all.
 // dxva2 is loaded by name inside the header, so this adds no link dependency.
 #include "DdcBrightness.h"
+#include "DisplayPower.h"
 // Audio-playback fallback for the media protection. SMTC (MediaPlaying) only sees players that
 // opt into publishing a session; a Chromium browser with media keys disabled publishes none, so
 // the app dimmed over a playing video. WASAPI sessions are not opt-in. See the header.
 #include "AudioPlayback.h"
-// Live acrylic for the panel: capture behind the panel, blur, tint, paint as the base. Every
-// native route to the Windows material was measured failing on this machine (see Acrylic.h).
+// Software backdrop remains a compatibility fallback. Native composition is preferred.
 #include "Acrylic.h"
+#include "NativeBackdrop.h"
 
 template<class T> struct Ptr {
     T* p = nullptr;
@@ -105,11 +106,9 @@ static const UINT kCheckTimer=1, kTestTimer=2, kPanelTimer=3, kPanelMotionTimer=
 static const UINT kPanelDismiss=WM_APP+7;
 // --panel-shot: capture the panel's own rect to panel-shot.bmp (audit aid, see PanelProc).
 static const UINT kPanelShot=WM_APP+12;
+static const UINT kDisplayOffApply=WM_APP+14, kDisplayOffDelayTimer=7;
 // --acrylic-pause: freeze the blur and clear the capture exclusion so the panel can be screenshotted.
 static const UINT kAcrylicPause=WM_APP+13;
-// Ctrl+Alt+S does the same thing from the keyboard. A tray app that is invisible to screenshots
-// needs a way out that does not require a terminal.
-static const int kAcrylicHotkey=1;
 static const wchar_t* kPanelClass=L"IdleDimmerPanel";
 // Command ids. The classic context menu is gone; the panel calls the same handlers directly
 // from ActivatePanelTarget. Two ids survive: kDimTest because --test-brightness posts it,
@@ -155,16 +154,12 @@ static bool protectSound=true;
 static bool acrylicEnabled=true;
 // Live refresh by default: a snapshot froze whatever was animating behind the panel (a Windows
 // flyout caught mid-dismiss stays in the background), which reads as a bug. Live needs the capture
-// exclusion, so Ctrl+Alt+S (or --acrylic-pause) freezes + drops it when a screenshot is wanted.
+// exclusion, so --acrylic-pause freezes + drops it when a screenshot is wanted.
 static bool acrylicLiveEnabled=false;
-// Displays-off state, kept apart from `dimmed`: the screens can be off while dimmed (the timeout
-// or the footer button after a dim) or off while not dimmed (the footer button on a live desktop).
-static bool displaysOff=false;
+// One display-off session owns its settle timer, input fence and idle-scheduler exclusion.
+static displaypower::Session displayOff;
 static DWORD offMinutes=0;
 static bool offInsteadOfDim=false;
-// How long a click that switched the displays off is ignored, so the same click's release cannot
-// wake them straight back up. Same reason manualDimIgnoreUntil exists.
-static ULONGLONG offIgnoreUntil=0;
 // Process start supplies the power card's session uptime denominator.
 static const ULONGLONG processStartTick=GetTickCount64();
 static bool inputRegistered=false,restorePending=false,testing=false,closing=false;
@@ -211,11 +206,12 @@ static RECT panelBounds={};   // actual panel rect in screen coords, updated whi
 static Rect panelTarget={};
 static ULONGLONG panelEntranceStart=0;
 static int panelEntranceDpi=96;
+static bool panelOpening=false;
 static bool panelEntering=false;
 static bool panelExiting=false;
 static int panelExitFromOffset=0;
 
-static HWND panelWindow=nullptr;static bool PanelHasBackdrop=false, PanelHasCorners=false;
+static HWND panelWindow=nullptr;static bool PanelHasCorners=false;
 // How many panel paints used a live acrylic frame. Reported by --status: the worker producing
 // frames proves the pipeline runs, this proves the painter consumed them.
 static unsigned acrylicPaints=0;static void WriteRuntimeReport() {
@@ -223,20 +219,33 @@ static unsigned acrylicPaints=0;static void WriteRuntimeReport() {
     if(f){
         const wchar_t* acrylicText;
         if(!acrylicEnabled)acrylicText=L"off (flat plate)";
-        else if(acrylic::Running())acrylicText=L"live";
+        else if(!panelWindow||!IsWindowVisible(panelWindow))acrylicText=L"inactive (panel hidden)";
+        else if(nativebackdrop::Running())acrylicText=L"native Windows host backdrop";
+        else if(acrylic::Running())acrylicText=L"live software fallback";
         else if(acrylic::Paused())acrylicText=L"frozen for screenshots";
         else if(acrylic::Frames()>0)acrylicText=L"snapshot at open (no refresh; screenshots work)";
         else acrylicText=L"snapshot pending";
-        fwprintf(f,L"Status: %ls\nEnabled: %d\nDimmed: %d\nDisplays off: %d\nIdle threshold: %u minutes\nIdle checks: %u\nInput notifications registered: %d\nAcrylic: %ls; frames %d; painted %u\n",status,enabled,dimmed,displaysOff,idleMs/60000,checks,inputRegistered,acrylicText,acrylic::Frames(),acrylicPaints);
+        fwprintf(f,L"Status: %ls\nEnabled: %d\nDimmed: %d\nDisplays off: %d\nIdle threshold: %u minutes\nIdle checks: %u\nInput notifications registered: %d\nAcrylic: %ls; frames %d; painted %u\n",status,enabled,dimmed,displayOff.OffRequested(),idleMs/60000,checks,inputRegistered,acrylicText,acrylic::Frames(),acrylicPaints);
         // Panel observability. There is no interactive preview in this environment, so the
         // panel's existence, visibility and which DWM tier it got are reported here rather
         // than assumed from the fact that the code compiled.
+        fwprintf(f,L"Display-off session: %u; phase %u\n",displayOff.generation,(unsigned)displayOff.phase);
         fwprintf(f,L"Panel window: %ls\nPanel visible: %ls\nPanel rect: %ld,%ld %ldx%ld\nBackdrop: %ls\nRounded corners: %ls\n",
                  panelWindow?L"created":L"not created",
                  (panelWindow&&IsWindowVisible(panelWindow))?L"yes":L"no",
                  panelBounds.left,panelBounds.top,panelBounds.right-panelBounds.left,panelBounds.bottom-panelBounds.top,
-                 PanelHasBackdrop?L"acrylic":L"opaque fallback",
+                 (!panelWindow||!IsWindowVisible(panelWindow))?L"inactive":
+                 (nativebackdrop::Running()?L"native acrylic":(acrylic::Frames()>0?L"software acrylic fallback":L"opaque fallback")),
                  PanelHasCorners?L"yes":L"no");
+        fwprintf(f,L"Native composition: %ls; last stage %ls; HRESULT 0x%08lX; presentations %u\nNative worker alive: %ls\n",
+                 nativebackdrop::Running()?L"running":L"stopped",nativebackdrop::Stage(),
+                 (unsigned long)nativebackdrop::LastError(),nativebackdrop::Frames(),nativebackdrop::WorkerAlive()?L"yes":L"no");
+        fwprintf(f,L"Native animation: %ls; stage %ls; HRESULT 0x%08lX; completed %u\n",
+                 nativebackdrop::AnimationPhase(),nativebackdrop::AnimationStage(),(unsigned long)nativebackdrop::AnimationError(),
+                 nativebackdrop::CompletedAnimations());
+        fwprintf(f,L"Native first frame ready: %ls; window cloaked: %ls\n",
+                 nativebackdrop::FirstFrameReady()?L"yes":L"no",nativebackdrop::Cloaked()?L"yes":L"no");
+        if(nativebackdrop::Running())fwprintf(f,L"Native compositor output: use Snipping Tool; --panel-shot renders software fallback only\n");
         fclose(f);
     }
 }
@@ -465,69 +474,84 @@ static void UpdateTray() {
 // ---------------------------------------------------------------------------
 // Switching the displays off
 // ---------------------------------------------------------------------------
-// WHY SC_MONITORPOWER AND NOT A DDC/CI POWER WRITE
-//
-// Twinkle Tray's button writes VCP 0xD6 over DDC/CI, and that works - but it hands the recovery
-// problem to the monitor: while the panel is in that state only a successful DDC wake write brings
-// it back. If it ignores the write, or the link drops while it is off, the screen stays dark with
-// no operating-system route out. The broadcast below is the request the power plan itself makes:
-// the display enters DPMS standby, Windows brings it back on the next input, and this app only has
-// to restore the brightness it captured. A tray utility must not be able to strand a dark monitor.
-static void SetKeepAwake(bool includeDisplay) {
-    SetThreadExecutionState(ES_CONTINUOUS|ES_SYSTEM_REQUIRED|(includeDisplay?ES_DISPLAY_REQUIRED:0));
+// Use one documented DefWindowProcW display-power request on our own window, rather than
+// a synchronous broadcast through every other app. The manual button settles before off;
+// no hardware brightness query/write, polling or repeated power request belongs to that path.
+static void ScheduleNext();
+static bool Restore(bool requestPowerOn=true);
+static bool SetKeepAwake(bool includeDisplay) {
+    return SetThreadExecutionState(ES_CONTINUOUS|ES_SYSTEM_REQUIRED|
+                                  (includeDisplay?ES_DISPLAY_REQUIRED:0))!=0;
 }
-// Raw input has to be registered for the wake to be seen even when nothing was dimmed (the footer
-// button on an already-lit desktop), so this is not tied to `dimmed`.
-static void OffDisplays() {
-    if(displaysOff)return;
-    SetKeepAwake(false);                       // the display claim would fight the standby request
-    if(!inputRegistered)InputEvents(true);
-    displaysOff=true;
-    offIgnoreUntil=GetTickCount64()+600;       // the click that asked for this must not wake it
-    SendMessageW(HWND_BROADCAST,WM_SYSCOMMAND,SC_MONITORPOWER,2);
-    // Two different aftermaths, and the tray tooltip must not promise a restore that will not
-    // happen: with no captured level (off instead of dim, or the footer button on a lit desktop)
-    // there is no brightness to put back, only a screen to wake.
+static void AbortDisplayOff(const wchar_t* message,HRESULT hr) {
+    displayOff.Cancel();KillTimer(window,kDisplayOffDelayTimer);
+    if(!dimmed)InputEvents(false);
+    ErrorStatus(message,hr);UpdateTray();ScheduleNext();
+}
+static void ApplyDisplayOff() {
+    const ULONGLONG now=GetTickCount64();
+    if(displayOff.phase!=displaypower::settling||now<displayOff.due)return;
+    LASTINPUTINFO input={sizeof(input),0};
+    if(!GetLastInputInfo(&input)){
+        AbortDisplayOff(L"Display-off input check failed",HRESULT_FROM_WIN32(GetLastError()));return;
+    }
+    // Automatic off was posted from a timer decision; input may have arrived before this
+    // message. A manual countdown deliberately allows settling input, an idle request does not.
+    if(displayOff.CancelForInput((DWORD)(GetTickCount()-input.dwTime),idleMs,manualDim)){
+        Restore();graceUntil=GetTickCount64()+idleMs;ScheduleNext();return;
+    }
+    if(!SetKeepAwake(false)){
+        AbortDisplayOff(L"Display-off power request failed",E_FAIL);return;
+    }
+    if(!displayOff.Commit(now,input.dwTime))return;
+    KillTimer(window,kDisplayOffDelayTimer);
+    if(!dimmed){
+        dimmed=true;lastStatsTick=now;persistedLastDimWallMs=WallNowMs();
+        sessionstats::NoteDim(now);SaveStats();
+    }
     const bool brightnessChanged=saved.count>0||ddcSaved.count>0;
     wcscpy(status,brightnessChanged?L"Displays off; input restores brightness":L"Displays off; input wakes them");
-    Log(L"Displays switched off");UpdateTray();
+    UpdateTray();
+    // Do this last: no tray refresh or brightness traffic after asking Windows to turn off.
+    DefWindowProcW(window,WM_SYSCOMMAND,SC_MONITORPOWER,2);
 }
-// Called on any input, and by every path that restores brightness. Idempotent.
-static void WakeDisplays() {
-    if(!displaysOff)return;
-    displaysOff=false;
-    SendMessageW(HWND_BROADCAST,WM_SYSCOMMAND,SC_MONITORPOWER,-1);
-    if(enabled)SetKeepAwake(true);
-    if(!dimmed){                               // the dimmed path unregisters inside Restore()
-        InputEvents(false);
-        wcscpy(status,L"Enabled; waiting for idle");
-        UpdateTray();
+static void OffDisplays(bool fromButton=false) {
+    if(displayOff.Active())return;
+    if(!inputRegistered&&!InputEvents(true)){
+        ErrorStatus(L"Input notifications unavailable",HRESULT_FROM_WIN32(GetLastError()));
+        UpdateTray();return;
+    }
+    if(!displayOff.Begin(GetTickCount64(),fromButton,inputRegistered))return;
+    restorePending=false;
+    KillTimer(window,kCheckTimer);KillTimer(window,kOffTimer);
+    if(fromButton){
+        if(!SetTimer(window,kDisplayOffDelayTimer,(UINT)displaypower::kManualSettleMs,nullptr)){
+            AbortDisplayOff(L"Display-off timer unavailable",HRESULT_FROM_WIN32(GetLastError()));return;
+        }
+        wcscpy(status,L"Displays off in 5 seconds");UpdateTray();
+    }else if(!PostMessageW(window,kDisplayOffApply,displayOff.generation,0)){
+        AbortDisplayOff(L"Display-off message unavailable",HRESULT_FROM_WIN32(GetLastError()));
     }
 }
-// "Off instead of dim": at the idle threshold the displays go to standby and the brightness is
-// never touched.
-//
-// `dimmed` is set even though nothing was dimmed, and that is deliberate. The scheduler treats
-// `dimmed` as the settled state - ScheduleWaitMs returns the two-minute dimmed cadence instead of
-// the 250 ms "a dim is due right now" wake - so leaving it false would have the app re-decide four
-// times a second for as long as the machine is idle, which is exactly the idle-CPU defect that
-// function's comment records. Restore() clears a dimmed state that captured nothing.
-static void StartOffInsteadOfDim() {
-    const ULONGLONG now=GetTickCount64();
-    dimmed=true;
-    lastStatsTick=now;                 // the dark interval starts here, as it does in Dim()
-    persistedLastDimWallMs=WallNowMs();
-    sessionstats::NoteDim(now);        // the power card counts a dark display, which this is
-    SaveStats();
-    OffDisplays();
+static void WakeDisplays(bool requestPowerOn=true) {
+    if(!displayOff.Active())return;
+    const bool wasOff=displayOff.OffRequested();
+    displayOff.Cancel();KillTimer(window,kDisplayOffDelayTimer);restorePending=false;
+    if(requestPowerOn){
+        if(enabled&&!locked)SetKeepAwake(true);
+        else SetThreadExecutionState(ES_CONTINUOUS);
+    }
+    if(!dimmed){InputEvents(false);wcscpy(status,L"Enabled; waiting for idle");UpdateTray();}
+    if(requestPowerOn&&wasOff){
+        DefWindowProcW(window,WM_SYSCOMMAND,SC_MONITORPOWER,-1);
+    }
 }
-static bool Restore() {
-    // Every restore path (input, lock, suspend, quit) also ends the pending displays-off timer and
-    // brings the screens back if they were already asleep. Doing it before the empty-state return
-    // matters: with nothing saved there is no brightness to restore, but the displays may still
-    // have been switched off by the footer button.
+static void StartOffInsteadOfDim() { OffDisplays(); }
+static bool Restore(bool requestPowerOn) {
+    // Input/quit restore may wake displays. Lock and suspend cancel pending off work without
+    // issuing a competing power-on command. Brightness captured before a dim is still restored.
     KillTimer(window,kOffTimer);
-    WakeDisplays();
+    WakeDisplays(requestPowerOn);
     const bool anySaved=saved.count>0||ddcSaved.count>0;
     // Nothing captured and nothing dark: the ordinary armed-and-awake case, nothing to do.
     // `dimmed` is part of the test because "off instead of dim" sets it without capturing a level
@@ -786,7 +810,7 @@ static DWORD ScheduleWaitMs(DWORD idle,DWORD threshold,bool graceOutstanding,DWO
 // decision point: it sees the video and declines to dim. What goes stale between checks is the
 // status line, and only while nothing is reading it - with the panel open the 1 s tick re-asks.
 static void ScheduleNext() {
-    if(!enabled||locked){KillTimer(window,kCheckTimer);return;}
+    if(!enabled||locked||displayOff.Active()){KillTimer(window,kCheckTimer);return;}
     LASTINPUTINFO probe={sizeof(probe),0};
     if(!GetLastInputInfo(&probe)){SetCoalescableTimer(window,kCheckTimer,kCheckMaxMs,nullptr,1000);return;}
     const DWORD idle=GetTickCount()-probe.dwTime;
@@ -809,6 +833,8 @@ static void Check() {
         lastStatsTick=now;
         if(dimmed)SaveStats();
     }
+    // An explicit off session is settled: media/idle checks must not restore or re-off it.
+    if(displayOff.Active()){ScheduleNext();return;}
     if(saved.count&&!dimmed){Restore();ScheduleNext();return;}
     if(!enabled||locked)return;
     // Cheap path. Not dimmed AND the threshold still in the future means no dim can be due, so
@@ -1273,15 +1299,12 @@ static HICON LoadStateIcon(int design,bool light,int px,const wchar_t* state) {
 static void StylePanel(HWND h) {
     ResolveDwm();
     // 20 = DWMWA_USE_IMMERSIVE_DARK_MODE (Win10 1809)
-    const BOOL dark=1;
+    const BOOL dark=!taskbarLight;
     SetDwmAttr(h,20,&dark,sizeof(dark));
     // 33 = DWMWA_WINDOW_CORNER_PREFERENCE; 2 = DWMWCP_ROUND (Win11 21H2)
     const int round=2;
     PanelHasCorners=SetDwmAttr(h,33,&round,sizeof(round));
-    // 38 = DWMWA_SYSTEM_BACKDROP_TYPE; 3 = transient window / acrylic (Win11 22H2)
-    // Read-only across builds, so the return value is the only probe available.
-    const int acrylic=3;
-    PanelHasBackdrop=SetDwmAttr(h,38,&acrylic,sizeof(acrylic));
+    // The native session enables the host backdrop. Do not request a second DWM material plate.
     // Extend the frame so the rounded corners and shadow are composited by DWM.
     struct { long cxLeftWidth, cxRightWidth, cyTopHeight, cyBottomHeight; } m = {0,0,0,0};
     HMODULE user=GetModuleHandleW(L"user32.dll");
@@ -1462,10 +1485,8 @@ static void ActivatePanelTarget(int hit) {
         break;
     }
     case hitDimNow: DimManual();break;
-    // Manual "turn the displays off now". Dim first when nothing is dimmed, so the wake path has a
-    // captured level to restore and the same state machine owns both stages; if there is no
-    // brightness control at all, Dim() fails and the screens are still switched off.
-    case hitDisplaysOff: HidePanel();if(!dimmed)Dim();OffDisplays();break;
+    // Manual off is independent of brightness controls and media protection.
+    case hitDisplaysOff: HidePanel();OffDisplays(true);break;
     case hitFooterExit: HidePanel();Shutdown();break;
     }
 }
@@ -1526,20 +1547,22 @@ static bool ForegroundIsCaptureTool() {
 }
 
 static void HidePanel(bool clearTrayPair) {
-    if(!panelWindow)return;
+    if(!panelWindow){panelOpening=false;return;}
     // Live acrylic ends with the panel: the capture thread exits and the exclusion is cleared, so
     // nothing is running (and nothing is hidden from screenshots) while the UI is absent.
-    acrylic::Stop();
     if(clearTrayPair)ForgetLastToggle();
     if(panelHook){UnhookWindowsHookEx(panelHook);panelHook=nullptr;}
     KillTimer(panelWindow,kPanelTimer);
     KillTimer(panelWindow,kPanelMotionTimer);
     KillTimer(panelWindow,kCaptureWatchTimer);
+    panelOpening=false;
     panelEntering=false;
     panelExiting=false;
     // Second guard against the double-click's second dismissal: HidePanel is idempotent, so
     // the extra post costs nothing.
     if(IsWindowVisible(panelWindow))ShowWindow(panelWindow,SW_HIDE);
+    nativebackdrop::Stop();
+    acrylic::Stop();
 }
 static void DismissPanel() {
     if(!panelWindow||!IsWindowVisible(panelWindow)||panelExiting)return;
@@ -1550,10 +1573,17 @@ static void DismissPanel() {
     BOOL animations=FALSE;
     SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&animations,0);
     if(!animations){HidePanel();return;}
+    if(nativebackdrop::Running()){
+        panelEntering=false;
+        panelExiting=true;
+        if(!nativebackdrop::AnimateHide())HidePanel(false);
+        return;
+    }
     // Capture the position already displayed, so closing midway through entry never jumps.
     RECT current=panelBounds;
     GetWindowRect(panelWindow,&current);
     panelExitFromOffset=current.top-panelTarget.y;
+
     panelEntering=false;
     panelExiting=true;
     panelEntranceStart=GetTickCount64();
@@ -1617,15 +1647,62 @@ static void PanelTick(HWND h) {
     }
 }
 static LRESULT CALLBACK PanelProc(HWND h,UINT msg,WPARAM wp,LPARAM lp) {
-    // A dismissing panel is no longer interactive, even though its exit is still visible.
-    if(panelExiting&&(msg==WM_LBUTTONDOWN||msg==WM_LBUTTONUP||msg==WM_MOUSEMOVE))return 0;
+    // Wait for the moving window to settle before interpreting control hits.
+    // Tray and click-away dismissal stay available during the entrance.
+    if((panelExiting||panelOpening||(panelEntering&&nativebackdrop::Running()))&&
+       (msg==WM_LBUTTONDOWN||msg==WM_LBUTTONUP||msg==WM_MOUSEMOVE))return 0;
     switch(msg){
+    case nativebackdrop::kAnimationUpdateMessage: {
+        const unsigned session=(unsigned)(wp>>1);
+        const bool exiting=(wp&1)!=0;
+        if(!nativebackdrop::Running()||session!=nativebackdrop::Session()||!IsWindowVisible(h))return 0;
+        if((exiting&&!panelExiting)||(!exiting&&(!panelEntering||panelExiting)))return 0;
+        const int y=(int)(LONG_PTR)lp;
+        SetWindowPos(h,nullptr,panelTarget.x,y,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
+        GetWindowRect(h,&panelBounds);
+        // Submit content for the applied position now, including the final move. Do not
+        // leave a stale composition presentation waiting for the visible-only seconds tick.
+        InvalidateRect(h,nullptr,FALSE);
+        UpdateWindow(h);
+        return 0;
+    }
+    case nativebackdrop::kAnimationCompleteMessage:
+        if(nativebackdrop::Running()&&(unsigned)lp==nativebackdrop::Session()){
+            if(wp&&panelExiting)HidePanel(false);
+            else if(!wp&&panelEntering&&!panelExiting&&IsWindowVisible(h)){
+                // Final position was applied by the preceding update from the same sender.
+                // Completion must not introduce a second position correction.
+                GetWindowRect(h,&panelBounds);
+                panelEntering=false;
+                InvalidateRect(h,nullptr,FALSE);
+                UpdateWindow(h);
+            }
+        }
+        return 0;
+    case WM_WINDOWPOSCHANGED:
+        if(nativebackdrop::Running()&&IsWindowVisible(h))GetWindowRect(h,&panelBounds);
+        break;
+    case nativebackdrop::kFailureMessage:
+        if(panelExiting){HidePanel(false);return 0;}
+        panelEntering=false;
+        nativebackdrop::Stop();
+        InvalidateRect(h,nullptr,FALSE); // opaque fallback; reopen retries the native device
+        return 0;
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC dc=BeginPaint(h,&ps);
         RECT rc;GetClientRect(h,&rc);
         const int dpi=panelDpi(h);
         PanelState s;CurrentPanelState(s);
+        if(nativebackdrop::Running()){
+            HBITMAP overlay=PaintPanelOverlay(rc.right,rc.bottom,s,dpi);
+            DIBSECTION dib={};
+            if(overlay&&GetObject(overlay,sizeof(dib),&dib))
+                nativebackdrop::Update(dib.dsBm.bmBits,rc.right,rc.bottom);
+            if(overlay)DeleteObject(overlay);
+            EndPaint(h,&ps);
+            return 0;
+        }
         // The live acrylic frame is the panel's base when one has been produced. Lock/Unlock
         // brackets the draw so a concurrent Stop() cannot free the bitmap mid-paint; the lock is
         // held only for this paint, and the worker holds it only long enough to swap an index.
@@ -1666,6 +1743,7 @@ static LRESULT CALLBACK PanelProc(HWND h,UINT msg,WPARAM wp,LPARAM lp) {
         InvalidateRect(panelWindow,nullptr,FALSE);
         return 0;
     case kPanelShot:
+        if(nativebackdrop::Running()){WriteRuntimeReport();return 0;}
         // --panel-shot: render the panel exactly as WM_PAINT does, but into a bitmap we own, and
         // write it to panel-shot.bmp. It cannot be a screen capture: the panel excludes itself from
         // capture (that is what lets it read what is behind itself), so a screenshot would show the
@@ -1833,8 +1911,22 @@ static LRESULT CALLBACK PanelProc(HWND h,UINT msg,WPARAM wp,LPARAM lp) {
     return DefWindowProcW(h,msg,wp,lp);
 }
 // The tray click selects the monitor; placement is fixed at its usable bottom-right corner.
+static HWND TaskbarForMonitor(HMONITOR monitor) {
+    HWND primary=FindWindowW(L"Shell_TrayWnd",nullptr);
+    if(primary&&MonitorFromWindow(primary,MONITOR_DEFAULTTONULL)==monitor){
+        return primary;
+    }
+    HWND secondary=nullptr;
+    while((secondary=FindWindowExW(nullptr,secondary,L"Shell_SecondaryTrayWnd",nullptr))!=nullptr){
+        if(MonitorFromWindow(secondary,MONITOR_DEFAULTTONULL)==monitor){
+            return secondary;
+        }
+    }
+    return nullptr;
+}
 static void ShowPanel() {
-    if(!panelWindow)return;
+    if(!panelWindow||panelOpening||panelEntering||panelExiting)return;
+    panelOpening=true; // before shell/Win32 calls that may reenter the tray callback
     POINT cursor;GetCursorPos(&cursor);
     RECT work={};SystemParametersInfoW(SPI_GETWORKAREA,0,&work,0);
     HMONITOR monitor=MonitorFromPoint(cursor,MONITOR_DEFAULTTONEAREST);
@@ -1869,15 +1961,25 @@ static void ShowPanel() {
     KillTimer(panelWindow,kPanelMotionTimer);
     panelTarget=r;
     panelEntranceDpi=dpi;
-    panelEntranceStart=GetTickCount64();
-    panelEntering=animations!=FALSE;
+
+    panelEntering=false;
     panelExiting=false;
-    if(panelEntering&&!SetTimer(panelWindow,kPanelMotionTimer,16,nullptr))panelEntering=false;
-    const int y=r.y+(panelEntering?PanelEntranceOffset(0,dpi):0);
-    // Start the live backdrop against the panel's final geometry BEFORE the window is shown: the
-    // capture exclusion has to exist before the first frame can be grabbed, or the first blur
-    // samples the panel itself and the panel renders a dark smear.
-    if(acrylic::ShouldStart(acrylicEnabled,true)){
+    int y=r.y;
+    // Prepare native controls/material while cloaked at the final geometry. Only the
+    // compatibility renderer below captures the desktop and uses capture exclusion.
+    bool nativeStarted=false;
+    const bool materialAllowed=acrylic::ShouldStart(acrylicEnabled,true)&&nativebackdrop::Allowed();
+    if(materialAllowed){
+        // The native target gets its final dimensions before any composition objects are attached.
+        // This does not activate or show the window and never moves the user's pointer.
+        SetWindowPos(panelWindow,nullptr,r.x,y,r.w,r.h,SWP_NOZORDER|SWP_NOACTIVATE);
+        HBITMAP overlay=PaintPanelOverlay(r.w,r.h,s,dpi);
+        DIBSECTION dib={};
+        if(overlay&&GetObject(overlay,sizeof(dib),&dib))
+            nativeStarted=nativebackdrop::Start(panelWindow,r.w,r.h,!taskbarLight,dpi,dib.dsBm.bmBits,animations!=FALSE);
+        if(overlay)DeleteObject(overlay);
+    }
+    if(materialAllowed&&!nativeStarted){
         const bool dark=!taskbarLight;
         const COLORREF tint=dark?RGB(0x20,0x20,0x20):RGB(0xFC,0xFC,0xFC);
         const RECT capture={r.x,r.y,r.x+r.w,r.y+r.h};
@@ -1887,8 +1989,28 @@ static void ShowPanel() {
         if(acrylicLiveEnabled)acrylic::Start(panelWindow,capture,r.w,r.h,tint,dark?38:0);
         else acrylic::StartSnapshot(panelWindow,capture,r.w,r.h,tint,dark?38:0);
     }
-    SetWindowPos(panelWindow,HWND_TOPMOST,r.x,y,r.w,r.h,SWP_SHOWWINDOW|SWP_NOACTIVATE);
+    panelEntering=animations!=FALSE;
+    if(!nativeStarted&&panelEntering){
+        // Preparation can take longer than the entrance. Start its clock only when ready to show.
+        panelEntranceStart=GetTickCount64();
+        if(!SetTimer(panelWindow,kPanelMotionTimer,16,nullptr))panelEntering=false;
+        if(panelEntering)y+=PanelEntranceOffset(0,dpi);
+    }
+    else if(nativeStarted&&panelEntering)y+=MulDiv(nativebackdrop::kNativeSlideTravel,dpi,96);
+    HWND taskbarWnd=TaskbarForMonitor(monitor);
+    HWND insertAfter=taskbarWnd?taskbarWnd:HWND_TOPMOST;
+    if(!SetWindowPos(panelWindow,insertAfter,r.x,y,r.w,r.h,SWP_SHOWWINDOW|SWP_NOACTIVATE)){
+        HidePanel(false); // never retain a prepared worker behind a window that failed to show
+        return;
+    }
     panelBounds=RECT{r.x,y,r.x+r.w,y+r.h};   // hook tests the visible position during the slide
+    if(nativeStarted&&panelEntering&&!nativebackdrop::AnimateShow()){
+        panelEntering=false;
+        nativebackdrop::Stop(); // an animation failure must not leave an invisible interactive panel
+        SetWindowPos(panelWindow,nullptr,r.x,r.y,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
+        GetWindowRect(panelWindow,&panelBounds);
+    }
+    else if(nativeStarted&&!panelEntering&&!nativebackdrop::Reveal())nativebackdrop::Stop();
     if(!panelHook) panelHook=SetWindowsHookExW(WH_MOUSE_LL,PanelMouseHook,GetModuleHandleW(nullptr),0);
     SetTimer(panelWindow,kPanelTimer,1000,nullptr);
     // While the material is live the panel is invisible to capture tools, so watch for one taking
@@ -1900,6 +2022,7 @@ static void ShowPanel() {
     // the blur "loading". One frame at open is what a still material can promise; use
     // AcrylicLive=1 if the backdrop must track what happens behind the panel.
     InvalidateRect(panelWindow,nullptr,FALSE);
+    panelOpening=false; // only preparation is guarded; the visible entrance can be dismissed
 }
 static void EnsurePanel() {
     if(panelWindow)return;
@@ -1940,8 +2063,8 @@ static void ForgetLastToggle(){lastToggleCode=0;lastToggleAt=0;}
 
 static void TogglePanel() {
     EnsurePanel();
-    if(panelExiting)return; // finish the current close before accepting another open
-    if(IsWindowVisible(panelWindow))DismissPanel(); else ShowPanel();
+    if(panelExiting||panelOpening)return; // do not reenter preparation or the current close
+    if(IsWindowVisible(panelWindow)||panelEntering)DismissPanel(); else ShowPanel();
 }
 static void LoadIcons() {
     bool light=TaskbarIsLight();int px=TrayIconSize();
@@ -2036,7 +2159,6 @@ static void Shutdown() {
         enabled=false;SetThreadExecutionState(ES_CONTINUOUS);KillTimer(window,kCheckTimer);return;
     }
     closing=true;HidePanel();KillTimer(window,kCheckTimer);KillTimer(window,kTestTimer);InputEvents(false);SetThreadExecutionState(ES_CONTINUOUS);
-    UnregisterHotKey(window,kAcrylicHotkey);
     WTSUnRegisterSessionNotification(window);Shell_NotifyIconW(NIM_DELETE,&tray);DestroyWindow(window);
 }
 static LRESULT CALLBACK WndProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp) {
@@ -2074,9 +2196,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp) {
             // pairing lives in TrayGesture.h with the measurement that justifies it.
             ULONGLONG now=GetTickCount64();
             DWORD since=lastToggleCode?(DWORD)(now-lastToggleAt):0xFFFFFFFFu;
-            UINT openState=(panelWindow&&IsWindowVisible(panelWindow))?1u:0u;
+            UINT openState=(panelWindow&&(IsWindowVisible(panelWindow)||panelOpening||panelEntering))?1u:0u;
             TrayAction act=ResolveTrayGesture(click,lastToggleCode,since,openState);
             if(act==trayToggle){
+                lastToggleCode=click;lastToggleAt=now;
                 if(TrayPressClosesPanel(click,trayPressStartedOpen))DismissPanel();
                 else TogglePanel();
                 if(click==WM_LBUTTONUP||click==WM_CONTEXTMENU)trayPressStartedOpen=false;
@@ -2087,6 +2210,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp) {
             return 0;
         }
     case WM_TIMER:
+        if(wp==kDisplayOffDelayTimer){ApplyDisplayOff();return 0;}
         if(wp==kCheckTimer)Check();
         if(wp==kOffTimer){
             // One-shot: the second stage of a dim. The timer is re-armed by the next Dim(), and
@@ -2125,29 +2249,47 @@ static LRESULT CALLBACK WndProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp) {
             if(testExit)Shutdown();
         }
         return 0;
-    case WM_INPUT:
-        // Do not inspect keys or mouse data. The existence of input is enough.
-        // The wake comes first: with the displays off, this is the message that means the user is
-        // back, and it must re-take the keep-awake claim even when nothing was dimmed.
-        if(displaysOff&&GetTickCount64()>=offIgnoreUntil)WakeDisplays();
-        if(dimmed&&!testing&&!restorePending){
-            if(GetTickCount64()>=manualDimIgnoreUntil){
-                HRAWINPUT hRaw=(HRAWINPUT)lp;UINT size=0;
-                GetRawInputData(hRaw,RID_INPUT,nullptr,&size,sizeof(RAWINPUTHEADER));
-                if(size>0&&size<=512){
-                    BYTE rawBuf[512];
-                    if(GetRawInputData(hRaw,RID_INPUT,rawBuf,&size,sizeof(RAWINPUTHEADER))==size){
-                        RAWINPUT* raw=(RAWINPUT*)rawBuf;
-                        if(raw->header.dwType==RIM_TYPEMOUSE){
-                            if(raw->data.mouse.lLastX==0&&raw->data.mouse.lLastY==0&&raw->data.mouse.usButtonFlags==0)break;
-                        }
-                    }
-                }
-                restorePending=true;PostMessageW(hwnd,kRestore,0,0);
+    case kDisplayOffApply:
+        if((UINT)wp==displayOff.generation)ApplyDisplayOff();
+        return 0;
+    case WM_INPUT: {
+        bool meaningful=false;
+        HRAWINPUT hRaw=(HRAWINPUT)lp;UINT size=0;
+        if(GetRawInputData(hRaw,RID_INPUT,nullptr,&size,sizeof(RAWINPUTHEADER))==0&&
+           size>=sizeof(RAWINPUTHEADER)&&size<=512){
+            alignas(RAWINPUT) BYTE rawBuf[512];
+            if(GetRawInputData(hRaw,RID_INPUT,rawBuf,&size,sizeof(RAWINPUTHEADER))==size){
+                const RAWINPUT* raw=(const RAWINPUT*)rawBuf;
+                if(raw->header.dwType==RIM_TYPEMOUSE&&size>=sizeof(RAWINPUTHEADER)+sizeof(RAWMOUSE))
+                    meaningful=displaypower::HasMouseAction(raw->data.mouse.lLastX,raw->data.mouse.lLastY,raw->data.mouse.usButtonFlags);
+                else if(raw->header.dwType==RIM_TYPEKEYBOARD&&size>=sizeof(RAWINPUTHEADER)+sizeof(RAWKEYBOARD))meaningful=true;
+                else if(raw->header.dwType==RIM_TYPEHID&&size>sizeof(RAWINPUTHEADER))meaningful=true;
+            }
+        }
+        if(size>512){
+            // Touch/digitizer reports can be large. The header is sufficient to classify
+            // them; do not allocate an unbounded payload or silently lose touch wake.
+            RAWINPUTHEADER header={};UINT headerSize=sizeof(header);
+            if(GetRawInputData(hRaw,RID_HEADER,&header,&headerSize,sizeof(header))==sizeof(header)&&
+               header.dwType==RIM_TYPEHID)meaningful=true;
+        }
+        const DWORD eventTick=(DWORD)GetMessageTime();
+        if(displayOff.Active()&&!displayOff.AllowsWake(eventTick,meaningful)){
+            break;
+        }
+        if(meaningful&&!testing&&!restorePending&&(displayOff.Active()||dimmed)&&
+           GetTickCount64()>=manualDimIgnoreUntil){
+            // Tag the deferred work. A stale input message must not wake a later off session.
+            if(PostMessageW(hwnd,kRestore,displayOff.generation,eventTick)){
+                restorePending=true;
             }
         }
         break; // DefWindowProc performs required raw-input cleanup.
-    case kRestore: restorePending=false;manualDimIgnoreUntil=0ULL;Restore();graceUntil=GetTickCount64()+idleMs;return 0;
+    }
+    case kRestore:
+        if((UINT)wp!=displayOff.generation)return 0;
+        restorePending=false;manualDimIgnoreUntil=0ULL;
+        Restore();graceUntil=GetTickCount64()+idleMs;ScheduleNext();return 0;
     case kEnable: enabled=true;ApplyEnabled();return 0;
     case kReport: WriteRuntimeReport();return 0;
     case kShowPanel: TogglePanel();return 0;
@@ -2159,19 +2301,30 @@ static LRESULT CALLBACK WndProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp) {
         if(LOWORD(wp)==kDimTest)StartDimTest();
         return 0;
     case WM_WTSSESSION_CHANGE:
-        if(wp==WTS_SESSION_LOCK){locked=true;Restore();SetThreadExecutionState(ES_CONTINUOUS);}
-        if(wp==WTS_SESSION_UNLOCK){locked=false;graceUntil=GetTickCount64()+idleMs;if(enabled)SetThreadExecutionState(ES_CONTINUOUS|ES_SYSTEM_REQUIRED|ES_DISPLAY_REQUIRED);}
+        if(wp==WTS_SESSION_LOCK){locked=true;Restore(false);SetThreadExecutionState(ES_CONTINUOUS);ScheduleNext();}
+        if(wp==WTS_SESSION_UNLOCK){locked=false;graceUntil=GetTickCount64()+idleMs;if(enabled)SetThreadExecutionState(ES_CONTINUOUS|ES_SYSTEM_REQUIRED|ES_DISPLAY_REQUIRED);ScheduleNext();}
         return 0;
     case WM_POWERBROADCAST:
-        if(wp==PBT_APMSUSPEND)Restore();
+        if(nativebackdrop::Running()&&!nativebackdrop::Allowed()){
+            nativebackdrop::Stop();InvalidateRect(panelWindow,nullptr,FALSE);
+        }
+        if(wp==PBT_APMSUSPEND){
+            Restore(false);SetThreadExecutionState(ES_CONTINUOUS);
+            KillTimer(window,kCheckTimer);
+        }
         if(wp==PBT_APMRESUMEAUTOMATIC||wp==PBT_APMRESUMESUSPEND){
-            Restore();
+            Restore(false);
             media.reset();
             mediaOperation.reset();
             graceUntil=GetTickCount64()+idleMs;
+            if(wp==PBT_APMRESUMESUSPEND&&enabled&&!locked)SetKeepAwake(true);
+            ScheduleNext();
         }
         return TRUE;
     case WM_SETTINGCHANGE:
+        if(nativebackdrop::Running()&&!nativebackdrop::Allowed()){
+            nativebackdrop::Stop();InvalidateRect(panelWindow,nullptr,FALSE);
+        }
         // Documented theme signal: re-read SystemUsesLightTheme and reload only when it actually
         // changed; the message also fires for unrelated settings and on lock/UAC (same guard Windows
         // Terminal ships for its taskbar icon).
@@ -2181,14 +2334,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp) {
         if(TaskbarIsLight()!=taskbarLight){LoadIcons();UpdateTray();}
         break;
     case WM_QUERYENDSESSION: Restore();return TRUE;
-    case WM_HOTKEY:
-        // Ctrl+Alt+S: freeze the material and drop the capture exclusion so the panel can be
-        // screenshotted. It stays frozen until the panel is closed and reopened, which is
-        // predictable; the alternative (auto-resume) would re-exclude mid-screenshot.
-        if(wp==kAcrylicHotkey&&panelWindow&&IsWindowVisible(panelWindow)){
-            SendMessageTimeoutW(panelWindow,kAcrylicPause,0,0,SMTO_ABORTIFHUNG,2000,nullptr);
-        }
-        return 0;
     case WM_ENDSESSION: if(wp)Shutdown();return 0;
     case WM_CLOSE: case kQuit: Shutdown();return 0;
     case WM_DESTROY: PostQuitMessage(0);return 0;
@@ -2854,6 +2999,47 @@ static bool SessionStatsChecks() {
 // the safe fallback never ran - which is exactly how the app painted orange tiles while Windows
 // showed the real accent. These assertions are what stop a value merely being non-zero from being
 // treated as correct.
+static bool NativeOverlayChecks() {
+    // Pixel-format contracts, not visual certification: body films must reveal the OS material,
+    // opaque accent RGB must survive, and every output channel must be premultiplied by coverage.
+    bool ok=true;
+    PanelState s={};s.dark=true;s.enabled=true;s.accent=0xD4BB8Bu;s.buttonCount=6;
+    const int w=kPanelWidth,h=PanelHeight(6);
+    HBITMAP bmp=PaintPanelOverlay(w,h,s,96);
+    DIBSECTION dib={};
+    const bool rendered=bmp&&GetObject(bmp,sizeof(dib),&dib)&&dib.dsBm.bmBits;
+    ok&=Check(rendered,L"native overlay: creates BGRA control surface");
+    if(rendered){
+        BYTE* pixels=(BYTE*)dib.dsBm.bmBits;
+        const Rect tile=TileRect(0,96,6);
+        BYTE* accent=pixels+((tile.y+10)*w+tile.x+10)*4;
+        ok&=Check(accent[0]==0x8B&&accent[1]==0xBB&&accent[2]==0xD4&&accent[3]==255,
+                  L"native overlay: opaque accent retains BGRA channels");
+        // Gap below the tile labels, away from dividers and all controls.
+        BYTE* body=pixels+((DividerY(6)-5)*w+w/2)*4;
+        ok&=Check(body[3]>0&&body[3]<16&&body[0]==body[3]&&body[1]==body[3]&&body[2]==body[3],
+                  L"native overlay: body has a thin white film over the material");
+        BYTE* footer=pixels+((FooterY(6)+5)*w+w/2)*4;
+        ok&=Check(footer[3]==0&&footer[0]==0&&footer[1]==0&&footer[2]==0,
+                  L"native overlay: footer keeps the bare material");
+        BYTE* seam=pixels+(FooterDividerY(6)*w+w/2)*4;
+        ok&=Check(seam[3]>0&&seam[3]<32&&seam[0]==0&&seam[1]==0&&seam[2]==0,
+                  L"native overlay: footer divider is a translucent dark seam");
+        const Rect off=TileRect(1,96,6);
+        BYTE* film=pixels+((off.y+10)*w+off.x+10)*4;
+        ok&=Check(film[3]>0&&film[3]<32,L"native overlay: OFF tile remains a translucent film");
+        bool premultiplied=true,hasCoverage=false;
+        for(int i=0;i<w*h;i++){
+            BYTE* p=pixels+i*4;
+            if(p[0]>p[3]||p[1]>p[3]||p[2]>p[3])premultiplied=false;
+            if(p[3]>0&&p[3]<255)hasCoverage=true;
+        }
+        ok&=Check(premultiplied,L"native overlay: all RGB channels are premultiplied");
+        ok&=Check(hasCoverage,L"native overlay: fractional alpha is preserved");
+    }
+    if(bmp)DeleteObject(bmp);
+    return ok;
+}
 static bool AccentChecks() {
     bool ok=true;
     // COLORREF is 0x00BBGGRR: low byte red, then green, then blue. The panel wants 0x00RRGGBB.
@@ -3089,7 +3275,7 @@ static bool AccentChecks() {
                         // The glyph is dark on this bright accent. Ink is any pixel that
                         // differs from the tile fill; a pixel that is not a full dark core
                         // is edge coverage, which is the property the old integer-line
-                        // painter lacked. Media's 1.5 px bars are deliberately all edge
+                        // painter lacked. Media's 1.0 px bars are deliberately all edge
                         // coverage at 96 DPI - two partial columns, no solid core - so
                         // requiring a solid core would reject correct antialiasing.
                         if(px!=fill){
@@ -3459,6 +3645,9 @@ static int SelfTest() {
     ok &= ScheduleChecks();
     ok &= PersistedStatsChecks();
     ok &= AccentChecks();
+    ok &= NativeOverlayChecks();
+    int powerChecks=0;
+    ok &= displaypower::Checks(&powerChecks);
     int ddcChecks=0;
     ok &= ddc::Checks(&ddcChecks);
     int audioChecks=0;
@@ -3467,7 +3656,7 @@ static int SelfTest() {
     ok &= acrylic::Checks(&acrylicChecks);
     FILE* f=_wfopen(reportFile,L"w, ccs=UTF-8");
     if(f){
-        fwprintf(f,L"Decision tests: %ls (%d checks)\n",ok?L"PASS":L"FAIL",kTrayCheckCount+flyoutChecks+ddcChecks+audioChecks+acrylicChecks);
+        fwprintf(f,L"Decision tests: %ls (%d checks)\n",ok?L"PASS":L"FAIL",kTrayCheckCount+flyoutChecks+ddcChecks+audioChecks+acrylicChecks+powerChecks);
         // A bare FAIL across ~200 assertions is unactionable, so name the first one that
         // failed. This is how the slider log-scale bug was pinned down.
         if(!ok&&flyoutFirstFailure[0])fwprintf(f,L"First layout failure: %ls\n",flyoutFirstFailure);
@@ -3667,10 +3856,6 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,wchar_t* command,int) {
     WNDCLASSW cls={};cls.lpfnWndProc=WndProc;cls.hInstance=instance;cls.lpszClassName=kClass;cls.hIcon=LoadIconW(instance,MAKEINTRESOURCEW(1));RegisterClassW(&cls);
     window=CreateWindowExW(WS_EX_TOOLWINDOW,kClass,L"Idle Dimmer",WS_POPUP,0,0,0,0,nullptr,nullptr,instance,nullptr);
     if(!window){CloseHandle(single);RoUninitialize();return 2;}
-    // Ctrl+Alt+S freezes acrylic for a screenshot. Registering a global hotkey is the only signal a
-    // WS_EX_NOACTIVATE tray app can receive without stealing focus.
-    if(!RegisterHotKey(window,kAcrylicHotkey,MOD_CONTROL|MOD_ALT,'S'))
-        Log(L"Ctrl+Alt+S hotkey unavailable; use --acrylic-pause before screenshotting");
     LoadIcons(); // File-based themed icons; falls back to the procedural design if the files are absent.
     AddTray();WTSRegisterSessionNotification(window,NOTIFY_FOR_THIS_SESSION);
     // Crash/kill recovery: a dimmed process that died left its saved levels on disk. Either
