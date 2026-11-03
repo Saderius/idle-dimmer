@@ -1,0 +1,1329 @@
+{
+  "date": "2026-11-03",
+  "baselineCommit": "7bcdf97",
+  "protocol": "QPC timestamps buffered in memory; one append after entrance; existing --menu requests; no synthetic input. CPU samples exclude status requests at endpoints.",
+  "limits": [
+    "Uncloaking is not photon latency.",
+    "No Windows Quick Settings timing.",
+    "No visual acceptance.",
+    "Process CPU time is coarse; cycles are not CPU-time or energy units.",
+    "Application state differed across CPU samples; see reports."
+  ],
+  "baselineHardwareOpenings": [
+    {
+      "ShowPanel received": 0.0,
+      "overlay begin": 1.407,
+      "overlay end": 16.668,
+      "native Start begin": 16.675,
+      "composition target": 21.749,
+      "D3D device": 154.917,
+      "root attachment": 172.85,
+      "GPU fence finished": 172.989,
+      "first-frame composition commit": 173.008,
+      "composition committed": 186.21,
+      "native Start returned": 186.234,
+      "uncloaked": 191.622,
+      "first HWND position applied": 203.34,
+      "entry complete": 385.689
+    },
+    {
+      "ShowPanel received": 0.0,
+      "overlay begin": 2.152,
+      "overlay end": 12.571,
+      "native Start begin": 12.576,
+      "composition target": 15.061,
+      "D3D device": 97.392,
+      "root attachment": 103.407,
+      "GPU fence finished": 103.539,
+      "first-frame composition commit": 103.558,
+      "composition committed": 118.389,
+      "native Start returned": 118.409,
+      "uncloaked": 121.982,
+      "first HWND position applied": 135.9,
+      "entry complete": 318.027
+    },
+    {
+      "ShowPanel received": 0.0,
+      "overlay begin": 2.126,
+      "overlay end": 13.606,
+      "native Start begin": 13.609,
+      "composition target": 17.392,
+      "D3D device": 101.971,
+      "root attachment": 110.359,
+      "GPU fence finished": 110.575,
+      "first-frame composition commit": 110.593,
+      "composition committed": 117.482,
+      "native Start returned": 117.502,
+      "uncloaked": 121.818,
+      "first HWND position applied": 134.392,
+      "entry complete": 316.964
+    },
+    {
+      "ShowPanel received": 0.0,
+      "overlay begin": 1.26,
+      "overlay end": 11.865,
+      "native Start begin": 11.872,
+      "composition target": 14.422,
+      "D3D device": 98.449,
+      "root attachment": 104.409,
+      "GPU fence finished": 104.54,
+      "first-frame composition commit": 104.558,
+      "composition committed": 112.142,
+      "native Start returned": 112.16,
+      "uncloaked": 115.367,
+      "first HWND position applied": 129.027,
+      "entry complete": 311.537
+    },
+    {
+      "ShowPanel received": 0.0,
+      "overlay begin": 1.633,
+      "overlay end": 12.405,
+      "native Start begin": 12.409,
+      "composition target": 15.664,
+      "D3D device": 99.602,
+      "root attachment": 113.707,
+      "GPU fence finished": 113.866,
+      "first-frame composition commit": 113.886,
+      "composition committed": 131.438,
+      "native Start returned": 131.462,
+      "uncloaked": 134.616,
+      "first HWND position applied": 147.528,
+      "entry complete": 330.064
+    },
+    {
+      "ShowPanel received": 0.0,
+      "overlay begin": 1.297,
+      "overlay end": 12.898,
+      "native Start begin": 12.901,
+      "composition target": 15.486,
+      "D3D device": 99.134,
+      "root attachment": 108.081,
+      "GPU fence finished": 108.218,
+      "first-frame composition commit": 108.237,
+      "composition committed": 119.912,
+      "native Start returned": 119.93,
+      "uncloaked": 123.412,
+      "first HWND position applied": 137.055,
+      "entry complete": 319.431
+    },
+    {
+      "ShowPanel received": 0.0,
+      "overlay begin": 1.449,
+      "overlay end": 12.287,
+      "native Start begin": 12.295,
+      "composition target": 14.87,
+      "D3D device": 100.268,
+      "root attachment": 112.898,
+      "GPU fence finished": 113.018,
+      "first-frame composition commit": 113.034,
+      "composition committed": 114.673,
+      "native Start returned": 114.691,
+      "uncloaked": 117.651,
+      "first HWND position applied": 132.195,
+      "entry complete": 314.418
+    },
+    {
+      "ShowPanel received": 0.0,
+      "overlay begin": 1.669,
+      "overlay end": 13.4,
+      "native Start begin": 13.404,
+      "composition target": 17.601,
+      "D3D device": 127.898,
+      "root attachment": 146.92,
+      "GPU fence finished": 147.131,
+      "first-frame composition commit": 147.153,
+      "composition committed": 155.137,
+      "native Start returned": 155.16,
+      "uncloaked": 159.43,
+      "first HWND position applied": 171.697,
+      "entry complete": 353.833
+    },
+    {
+      "ShowPanel received": 0.0,
+      "overlay begin": 1.756,
+      "overlay end": 14.953,
+      "native Start begin": 14.958,
+      "composition target": 17.962,
+      "D3D device": 131.361,
+      "root attachment": 142.36,
+      "GPU fence finished": 142.507,
+      "first-frame composition commit": 142.529,
+      "composition committed": 147.073,
+      "native Start returned": 147.097,
+      "uncloaked": 151.1,
+      "first HWND position applied": 164.442,
+      "entry complete": 346.671
+    },
+    {
+      "ShowPanel received": 0.0,
+      "overlay begin": 1.286,
+      "overlay end": 11.775,
+      "native Start begin": 11.779,
+      "composition target": 14.762,
+      "D3D device": 110.115,
+      "root attachment": 124.165,
+      "GPU fence finished": 124.306,
+      "first-frame composition commit": 124.328,
+      "composition committed": 133.427,
+      "native Start returned": 133.444,
+      "uncloaked": 137.272,
+      "first HWND position applied": 150.391,
+      "entry complete": 334.933
+    },
+    {
+      "ShowPanel received": 0.0,
+      "overlay begin": 1.629,
+      "overlay end": 13.149,
+      "native Start begin": 13.159,
+      "composition target": 15.821,
+      "D3D device": 105.117,
+      "root attachment": 133.312,
+      "GPU fence finished": 133.435,
+      "first-frame composition commit": 133.452,
+      "composition committed": 139.136,
+      "native Start returned": 139.157,
+      "uncloaked": 142.377,
+      "first HWND position applied": 156.328,
+      "entry complete": 338.69
+    }
+  ],
+  "rejectedHardwareCacheOpenings": [
+    {
+      "ShowPanel received": 0.0,
+      "overlay begin": 25.813,
+      "overlay end": 42.204,
+      "native Start begin": 42.208,
+      "composition target": 47.363,
+      "D3D device": 173.516,
+      "root attachment": 189.566,
+      "GPU fence finished": 189.715,
+      "first-frame composition commit": 189.738,
+      "composition committed": 198.896,
+      "native Start returned": 198.911,
+      "uncloaked": 205.074,
+      "first HWND position applied": 216.053,
+      "entry complete": 398.183
+    },
+    {
+      "ShowPanel received": 0.0,
+      "overlay begin": 1.22,
+      "overlay end": 11.499,
+      "native Start begin": 11.504,
+      "composition target": 13.957,
+      "D3D device": 13.961,
+      "root attachment": 17.1,
+      "GPU fence finished": 17.276,
+      "first-frame composition commit": 17.391,
+      "composition committed": 18.964,
+      "native Start returned": 18.977,
+      "uncloaked": 22.482,
+      "first HWND position applied": 35.804,
+      "entry complete": 217.804
+    },
+    {
+      "ShowPanel received": 0.0,
+      "overlay begin": 1.466,
+      "overlay end": 12.37,
+      "native Start begin": 12.374,
+      "composition target": 14.785,
+      "D3D device": 14.789,
+      "root attachment": 18.104,
+      "GPU fence finished": 18.209,
+      "first-frame composition commit": 18.225,
+      "composition committed": 19.924,
+      "native Start returned": 19.941,
+      "uncloaked": 23.023,
+      "first HWND position applied": 37.513,
+      "entry complete": 219.63
+    },
+    {
+      "ShowPanel received": 0.0,
+      "overlay begin": 1.293,
+      "overlay end": 12.043,
+      "native Start begin": 12.049,
+      "composition target": 15.242,
+      "D3D device": 15.246,
+      "root attachment": 18.479,
+      "GPU fence finished": 19.04,
+      "first-frame composition commit": 19.059,
+      "composition committed": 31.006,
+      "native Start returned": 31.022,
+      "uncloaked": 34.041,
+      "first HWND position applied": 47.558,
+      "entry complete": 230.022
+    },
+    {
+      "ShowPanel received": 0.0,
+      "overlay begin": 1.32,
+      "overlay end": 11.564,
+      "native Start begin": 11.567,
+      "test-only explicit cache eviction": 25.926,
+      "composition target": 28.732,
+      "D3D device": 111.142,
+      "root attachment": 133.691,
+      "GPU fence finished": 133.822,
+      "first-frame composition commit": 133.841,
+      "composition committed": 143.399,
+      "native Start returned": 143.425,
+      "uncloaked": 146.849,
+      "first HWND position applied": 160.462,
+      "entry complete": 342.846
+    },
+    {
+      "ShowPanel received": 0.0,
+      "overlay begin": 1.159,
+      "overlay end": 12.231,
+      "native Start begin": 12.235,
+      "composition target": 14.68,
+      "D3D device": 14.684,
+      "root attachment": 17.949,
+      "GPU fence finished": 18.055,
+      "first-frame composition commit": 18.072,
+      "composition committed": 25.657,
+      "native Start returned": 25.675,
+      "uncloaked": 29.285,
+      "first HWND position applied": 43.148,
+      "entry complete": 225.126
+    }
+  ],
+  "warpOpenings": [
+    {
+      "ShowPanel received": 0.0,
+      "overlay begin": 2.156,
+      "overlay end": 17.241,
+      "native Start begin": 17.244,
+      "composition target": 22.104,
+      "D3D device": 35.791,
+      "root attachment": 44.813,
+      "GPU fence finished": 45.345,
+      "first-frame composition commit": 45.383,
+      "composition committed": 58.775,
+      "native Start returned": 58.799,
+      "uncloaked": 65.717,
+      "first HWND position applied": 75.938,
+      "entry complete": 258.369
+    },
+    {
+      "ShowPanel received": 0.0,
+      "overlay begin": 1.074,
+      "overlay end": 11.952,
+      "native Start begin": 11.959,
+      "composition target": 14.37,
+      "D3D device": 16.465,
+      "root attachment": 18.756,
+      "GPU fence finished": 18.947,
+      "first-frame composition commit": 18.975,
+      "composition committed": 34.161,
+      "native Start returned": 34.182,
+      "uncloaked": 38.005,
+      "first HWND position applied": 51.276,
+      "entry complete": 233.96
+    },
+    {
+      "ShowPanel received": 0.0,
+      "overlay begin": 1.293,
+      "overlay end": 11.908,
+      "native Start begin": 11.912,
+      "composition target": 14.686,
+      "D3D device": 16.793,
+      "root attachment": 18.901,
+      "GPU fence finished": 18.979,
+      "first-frame composition commit": 18.993,
+      "composition committed": 29.155,
+      "native Start returned": 29.172,
+      "uncloaked": 32.754,
+      "first HWND position applied": 46.269,
+      "entry complete": 228.734
+    },
+    {
+      "ShowPanel received": 0.0,
+      "overlay begin": 1.603,
+      "overlay end": 12.48,
+      "native Start begin": 12.483,
+      "composition target": 14.753,
+      "D3D device": 17.491,
+      "root attachment": 20.259,
+      "GPU fence finished": 20.37,
+      "first-frame composition commit": 20.387,
+      "composition committed": 32.54,
+      "native Start returned": 32.559,
+      "uncloaked": 36.854,
+      "first HWND position applied": 49.417,
+      "entry complete": 231.81
+    },
+    {
+      "ShowPanel received": 0.0,
+      "overlay begin": 1.382,
+      "overlay end": 16.963,
+      "native Start begin": 16.966,
+      "composition target": 22.03,
+      "D3D device": 34.763,
+      "root attachment": 43.428,
+      "GPU fence finished": 43.685,
+      "first-frame composition commit": 43.785,
+      "composition committed": 47.245,
+      "native Start returned": 47.269,
+      "uncloaked": 52.319,
+      "first HWND position applied": 64.3,
+      "entry complete": 246.281
+    },
+    {
+      "ShowPanel received": 0.0,
+      "overlay begin": 1.456,
+      "overlay end": 11.709,
+      "native Start begin": 11.714,
+      "composition target": 13.914,
+      "test-only WARP creation failure": 16.032,
+      "D3D device": 132.563,
+      "root attachment": 145.065,
+      "GPU fence finished": 145.188,
+      "first-frame composition commit": 145.208,
+      "composition committed": 150.612,
+      "native Start returned": 150.631,
+      "uncloaked": 154.243,
+      "first HWND position applied": 167.743,
+      "entry complete": 349.705
+    }
+  ],
+  "warpRunConditions": [
+    "normal profiling",
+    "normal profiling",
+    "normal profiling",
+    "normal profiling",
+    "normal helper",
+    "forced WARP failure; hardware fallback"
+  ],
+  "cpuSamples": {
+    "baseline-after-close": {
+      "label": "baseline-after-close",
+      "pid": 20412,
+      "date": "2026-11-03",
+      "samples": [
+        {
+          "seconds": 10.008650699999999,
+          "cpuMs": 0,
+          "cycles": 1176465,
+          "workingSet": 32808960,
+          "privateBytes": 9908224,
+          "threads": 14
+        },
+        {
+          "seconds": 20.0271775,
+          "cpuMs": 0,
+          "cycles": 3125299,
+          "workingSet": 32808960,
+          "privateBytes": 9908224,
+          "threads": 14
+        },
+        {
+          "seconds": 30.041663,
+          "cpuMs": 0,
+          "cycles": 5358712,
+          "workingSet": 32792576,
+          "privateBytes": 9895936,
+          "threads": 13
+        },
+        {
+          "seconds": 40.055614899999995,
+          "cpuMs": 0,
+          "cycles": 6579555,
+          "workingSet": 32792576,
+          "privateBytes": 9895936,
+          "threads": 13
+        },
+        {
+          "seconds": 50.075361799999996,
+          "cpuMs": 0,
+          "cycles": 9479451,
+          "workingSet": 32743424,
+          "privateBytes": 9797632,
+          "threads": 10
+        },
+        {
+          "seconds": 60.088546699999995,
+          "cpuMs": 0,
+          "cycles": 10877426,
+          "workingSet": 32743424,
+          "privateBytes": 9797632,
+          "threads": 10
+        },
+        {
+          "seconds": 70.1032391,
+          "cpuMs": 0,
+          "cycles": 12556090,
+          "workingSet": 32743424,
+          "privateBytes": 9797632,
+          "threads": 10
+        },
+        {
+          "seconds": 80.1237451,
+          "cpuMs": 0,
+          "cycles": 13662092,
+          "workingSet": 32743424,
+          "privateBytes": 9797632,
+          "threads": 10
+        },
+        {
+          "seconds": 90.1386763,
+          "cpuMs": 0,
+          "cycles": 14823765,
+          "workingSet": 32743424,
+          "privateBytes": 9797632,
+          "threads": 10
+        },
+        {
+          "seconds": 100.1546084,
+          "cpuMs": 0,
+          "cycles": 16451820,
+          "workingSet": 32743424,
+          "privateBytes": 9797632,
+          "threads": 10
+        },
+        {
+          "seconds": 110.1607155,
+          "cpuMs": 0,
+          "cycles": 17566388,
+          "workingSet": 32743424,
+          "privateBytes": 9797632,
+          "threads": 10
+        },
+        {
+          "seconds": 120.17255979999999,
+          "cpuMs": 0,
+          "cycles": 19183152,
+          "workingSet": 32743424,
+          "privateBytes": 9797632,
+          "threads": 10
+        }
+      ],
+      "threads": [
+        {
+          "id": 11440,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 37928,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 2496,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 22108,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 27400,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 2360,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 5460,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 2640,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 13976,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 38232,
+          "cpuMs": 0,
+          "new": false
+        }
+      ]
+    },
+    "candidate-after-close": {
+      "label": "candidate-after-close",
+      "pid": 39824,
+      "date": "2026-11-03",
+      "samples": [
+        {
+          "seconds": 10.0176258,
+          "cpuMs": 0,
+          "cycles": 17079765,
+          "workingSet": 47169536,
+          "privateBytes": 59707392,
+          "threads": 28
+        },
+        {
+          "seconds": 20.048987399999998,
+          "cpuMs": 0,
+          "cycles": 35059191,
+          "workingSet": 47120384,
+          "privateBytes": 59604992,
+          "threads": 25
+        },
+        {
+          "seconds": 30.0617305,
+          "cpuMs": 0,
+          "cycles": 51086660,
+          "workingSet": 47120384,
+          "privateBytes": 59604992,
+          "threads": 25
+        },
+        {
+          "seconds": 40.0816531,
+          "cpuMs": 0,
+          "cycles": 68338087,
+          "workingSet": 47120384,
+          "privateBytes": 59604992,
+          "threads": 25
+        },
+        {
+          "seconds": 50.094025699999996,
+          "cpuMs": 0,
+          "cycles": 86790911,
+          "workingSet": 47120384,
+          "privateBytes": 59604992,
+          "threads": 25
+        },
+        {
+          "seconds": 60.1110596,
+          "cpuMs": 0,
+          "cycles": 125190302,
+          "workingSet": 52400128,
+          "privateBytes": 59822080,
+          "threads": 27
+        },
+        {
+          "seconds": 70.1232962,
+          "cpuMs": 0,
+          "cycles": 150748241,
+          "workingSet": 52609024,
+          "privateBytes": 60047360,
+          "threads": 29
+        },
+        {
+          "seconds": 80.1442136,
+          "cpuMs": 0,
+          "cycles": 171856079,
+          "workingSet": 52674560,
+          "privateBytes": 60047360,
+          "threads": 29
+        },
+        {
+          "seconds": 90.16343669999999,
+          "cpuMs": 0,
+          "cycles": 193229417,
+          "workingSet": 52649984,
+          "privateBytes": 60006400,
+          "threads": 28
+        },
+        {
+          "seconds": 100.17092199999999,
+          "cpuMs": 0,
+          "cycles": 210005493,
+          "workingSet": 52649984,
+          "privateBytes": 60006400,
+          "threads": 28
+        },
+        {
+          "seconds": 110.1807376,
+          "cpuMs": 15.625,
+          "cycles": 227181417,
+          "workingSet": 52514816,
+          "privateBytes": 60264448,
+          "threads": 28
+        },
+        {
+          "seconds": 120.19163909999999,
+          "cpuMs": 31.25,
+          "cycles": 245577783,
+          "workingSet": 52527104,
+          "privateBytes": 60264448,
+          "threads": 28
+        }
+      ],
+      "threads": [
+        {
+          "id": 13944,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 12596,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 26876,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 2708,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 36916,
+          "cpuMs": 31.25,
+          "new": false
+        },
+        {
+          "id": 24880,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 27532,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 25228,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 8568,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 33356,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 3544,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 17460,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 32664,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 17920,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 34916,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 16588,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 37460,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 9060,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 2944,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 24112,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 22476,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 23232,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 6612,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 25440,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 17656,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 38280,
+          "cpuMs": 0,
+          "new": true
+        },
+        {
+          "id": 40816,
+          "cpuMs": 0,
+          "new": true
+        },
+        {
+          "id": 47092,
+          "cpuMs": 0,
+          "new": true
+        }
+      ]
+    },
+    "warp-after-close": {
+      "label": "warp-after-close",
+      "pid": 43936,
+      "date": "2026-11-03",
+      "samples": [
+        {
+          "seconds": 10.0160246,
+          "cpuMs": 0,
+          "cycles": 0,
+          "workingSet": 21819392,
+          "privateBytes": 4218880,
+          "threads": 7
+        },
+        {
+          "seconds": 20.034574799999998,
+          "cpuMs": 0,
+          "cycles": 0,
+          "workingSet": 21819392,
+          "privateBytes": 4218880,
+          "threads": 7
+        },
+        {
+          "seconds": 30.0409905,
+          "cpuMs": 0,
+          "cycles": 618597,
+          "workingSet": 21856256,
+          "privateBytes": 4284416,
+          "threads": 9
+        },
+        {
+          "seconds": 40.0591389,
+          "cpuMs": 0,
+          "cycles": 618597,
+          "workingSet": 21856256,
+          "privateBytes": 4284416,
+          "threads": 9
+        },
+        {
+          "seconds": 50.073692699999995,
+          "cpuMs": 0,
+          "cycles": 618597,
+          "workingSet": 21856256,
+          "privateBytes": 4284416,
+          "threads": 9
+        },
+        {
+          "seconds": 60.0916559,
+          "cpuMs": 0,
+          "cycles": 25138652,
+          "workingSet": 27226112,
+          "privateBytes": 4419584,
+          "threads": 10
+        },
+        {
+          "seconds": 70.10773979999999,
+          "cpuMs": 0,
+          "cycles": 26360664,
+          "workingSet": 27230208,
+          "privateBytes": 4419584,
+          "threads": 10
+        },
+        {
+          "seconds": 80.1246888,
+          "cpuMs": 0,
+          "cycles": 27887499,
+          "workingSet": 27287552,
+          "privateBytes": 4419584,
+          "threads": 10
+        },
+        {
+          "seconds": 90.1446864,
+          "cpuMs": 0,
+          "cycles": 30905736,
+          "workingSet": 27262976,
+          "privateBytes": 4374528,
+          "threads": 9
+        },
+        {
+          "seconds": 100.150492,
+          "cpuMs": 15.625,
+          "cycles": 32729998,
+          "workingSet": 27381760,
+          "privateBytes": 4526080,
+          "threads": 9
+        },
+        {
+          "seconds": 110.1704139,
+          "cpuMs": 15.625,
+          "cycles": 33893229,
+          "workingSet": 27381760,
+          "privateBytes": 4374528,
+          "threads": 9
+        },
+        {
+          "seconds": 120.1814326,
+          "cpuMs": 15.625,
+          "cycles": 35112125,
+          "workingSet": 27381760,
+          "privateBytes": 4374528,
+          "threads": 9
+        }
+      ],
+      "threads": [
+        {
+          "id": 43748,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 43292,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 36372,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 42408,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 47724,
+          "cpuMs": 0,
+          "new": true
+        },
+        {
+          "id": 11836,
+          "cpuMs": 15.625,
+          "new": true
+        },
+        {
+          "id": 47164,
+          "cpuMs": 0,
+          "new": true
+        },
+        {
+          "id": 7060,
+          "cpuMs": 0,
+          "new": true
+        },
+        {
+          "id": 39948,
+          "cpuMs": 0,
+          "new": true
+        }
+      ]
+    },
+    "warp-steady": {
+      "label": "warp-steady",
+      "pid": 43936,
+      "date": "2026-11-03",
+      "samples": [
+        {
+          "seconds": 10.0046725,
+          "cpuMs": 0,
+          "cycles": 2193318,
+          "workingSet": 27373568,
+          "privateBytes": 4341760,
+          "threads": 8
+        },
+        {
+          "seconds": 20.0295935,
+          "cpuMs": 0,
+          "cycles": 3872370,
+          "workingSet": 27373568,
+          "privateBytes": 4341760,
+          "threads": 8
+        },
+        {
+          "seconds": 30.0442245,
+          "cpuMs": 0,
+          "cycles": 5389471,
+          "workingSet": 27373568,
+          "privateBytes": 4341760,
+          "threads": 8
+        },
+        {
+          "seconds": 40.0506751,
+          "cpuMs": 0,
+          "cycles": 6577225,
+          "workingSet": 27373568,
+          "privateBytes": 4341760,
+          "threads": 8
+        },
+        {
+          "seconds": 50.065314799999996,
+          "cpuMs": 0,
+          "cycles": 7754466,
+          "workingSet": 27373568,
+          "privateBytes": 4341760,
+          "threads": 8
+        },
+        {
+          "seconds": 60.076890899999995,
+          "cpuMs": 0,
+          "cycles": 9468160,
+          "workingSet": 27377664,
+          "privateBytes": 4341760,
+          "threads": 8
+        },
+        {
+          "seconds": 70.09244799999999,
+          "cpuMs": 0,
+          "cycles": 10673431,
+          "workingSet": 27377664,
+          "privateBytes": 4341760,
+          "threads": 8
+        },
+        {
+          "seconds": 80.1034739,
+          "cpuMs": 0,
+          "cycles": 11866633,
+          "workingSet": 27377664,
+          "privateBytes": 4341760,
+          "threads": 8
+        },
+        {
+          "seconds": 90.1190646,
+          "cpuMs": 0,
+          "cycles": 13699845,
+          "workingSet": 27377664,
+          "privateBytes": 4341760,
+          "threads": 8
+        },
+        {
+          "seconds": 100.1372595,
+          "cpuMs": 0,
+          "cycles": 14884486,
+          "workingSet": 27377664,
+          "privateBytes": 4341760,
+          "threads": 8
+        },
+        {
+          "seconds": 110.1460068,
+          "cpuMs": 0,
+          "cycles": 16528110,
+          "workingSet": 27377664,
+          "privateBytes": 4341760,
+          "threads": 8
+        },
+        {
+          "seconds": 120.15521749999999,
+          "cpuMs": 0,
+          "cycles": 17578441,
+          "workingSet": 27377664,
+          "privateBytes": 4341760,
+          "threads": 8
+        }
+      ],
+      "threads": [
+        {
+          "id": 43748,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 43292,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 36372,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 42408,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 47724,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 11836,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 7060,
+          "cpuMs": 0,
+          "new": false
+        },
+        {
+          "id": 39948,
+          "cpuMs": 0,
+          "new": false
+        }
+      ]
+    },
+    "cached-threads": {
+      "label": "cached-threads",
+      "pid": 39824,
+      "seconds": 60.0825463,
+      "threads": [
+        {
+          "id": 13944,
+          "cycles": 517769,
+          "module": "IdleDimmer.exe",
+          "new": false
+        },
+        {
+          "id": 12596,
+          "cycles": 0,
+          "module": "windhawk.dll",
+          "new": false
+        },
+        {
+          "id": 26876,
+          "cycles": 362050,
+          "module": "nvwgf2umx.dll",
+          "new": false
+        },
+        {
+          "id": 2708,
+          "cycles": 0,
+          "module": "nvwgf2umx.dll",
+          "new": false
+        },
+        {
+          "id": 36916,
+          "cycles": 90446459,
+          "module": "nvwgf2umx.dll",
+          "new": false
+        },
+        {
+          "id": 24880,
+          "cycles": 0,
+          "module": "nvwgf2umx.dll",
+          "new": false
+        },
+        {
+          "id": 27532,
+          "cycles": 0,
+          "module": "nvwgf2umx.dll",
+          "new": false
+        },
+        {
+          "id": 25228,
+          "cycles": 0,
+          "module": "nvwgf2umx.dll",
+          "new": false
+        },
+        {
+          "id": 8568,
+          "cycles": 0,
+          "module": "nvwgf2umx.dll",
+          "new": false
+        },
+        {
+          "id": 33356,
+          "cycles": 0,
+          "module": "nvwgf2umx.dll",
+          "new": false
+        },
+        {
+          "id": 3544,
+          "cycles": 0,
+          "module": "nvwgf2umx.dll",
+          "new": false
+        },
+        {
+          "id": 17460,
+          "cycles": 0,
+          "module": "nvwgf2umx.dll",
+          "new": false
+        },
+        {
+          "id": 32664,
+          "cycles": 0,
+          "module": "nvwgf2umx.dll",
+          "new": false
+        },
+        {
+          "id": 17920,
+          "cycles": 0,
+          "module": "nvwgf2umx.dll",
+          "new": false
+        },
+        {
+          "id": 34916,
+          "cycles": 0,
+          "module": "nvwgf2umx.dll",
+          "new": false
+        },
+        {
+          "id": 16588,
+          "cycles": 0,
+          "module": "nvwgf2umx.dll",
+          "new": false
+        },
+        {
+          "id": 37460,
+          "cycles": 0,
+          "module": "nvwgf2umx.dll",
+          "new": false
+        },
+        {
+          "id": 9060,
+          "cycles": 0,
+          "module": "nvwgf2umx.dll",
+          "new": false
+        },
+        {
+          "id": 2944,
+          "cycles": 0,
+          "module": "nvwgf2umx.dll",
+          "new": false
+        },
+        {
+          "id": 24112,
+          "cycles": 0,
+          "module": "nvwgf2umx.dll",
+          "new": false
+        },
+        {
+          "id": 22476,
+          "cycles": 0,
+          "module": "nvwgf2umx.dll",
+          "new": false
+        },
+        {
+          "id": 23232,
+          "cycles": 0,
+          "module": "ntdll.dll",
+          "new": false
+        },
+        {
+          "id": 6612,
+          "cycles": 0,
+          "module": "ntdll.dll",
+          "new": false
+        },
+        {
+          "id": 25440,
+          "cycles": 0,
+          "module": "ntdll.dll",
+          "new": false
+        },
+        {
+          "id": 17656,
+          "cycles": 3980593,
+          "module": "ntdll.dll",
+          "new": false
+        },
+        {
+          "id": 40816,
+          "cycles": 2994106,
+          "module": "shcore.dll",
+          "new": false
+        },
+        {
+          "id": 47092,
+          "cycles": 1337635,
+          "module": "shcore.dll",
+          "new": false
+        }
+      ]
+    },
+    "warp-threads": {
+      "label": "warp-threads",
+      "pid": 43936,
+      "seconds": 30.0468425,
+      "threads": [
+        {
+          "id": 43748,
+          "cycles": 647015,
+          "module": "IdleDimmer.exe",
+          "new": false
+        },
+        {
+          "id": 43292,
+          "cycles": 0,
+          "module": "windhawk.dll",
+          "new": false
+        },
+        {
+          "id": 36372,
+          "cycles": 0,
+          "module": "ntdll.dll",
+          "new": false
+        },
+        {
+          "id": 42408,
+          "cycles": 0,
+          "module": "ntdll.dll",
+          "new": false
+        },
+        {
+          "id": 47724,
+          "cycles": 0,
+          "module": "ntdll.dll",
+          "new": false
+        },
+        {
+          "id": 11836,
+          "cycles": 1885380,
+          "module": "ntdll.dll",
+          "new": false
+        },
+        {
+          "id": 47164,
+          "cycles": 0,
+          "module": "combase.dll",
+          "new": false
+        },
+        {
+          "id": 7060,
+          "cycles": 1361768,
+          "module": "shcore.dll",
+          "new": false
+        },
+        {
+          "id": 39948,
+          "cycles": 387353,
+          "module": "shcore.dll",
+          "new": false
+        }
+      ]
+    }
+  },
+  "cleanArtifact": {
+    "bytes": 288768,
+    "sha256": "31fec9e2b1a54deadb31f7c0c4bf5440c484156ebd31eb6625dcfe272339930f",
+    "selfTestChecks": 2368,
+    "selfTestResult": "PASS"
+  }
+}

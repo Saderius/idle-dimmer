@@ -6,9 +6,28 @@
 > disproved by successful activation with a DispatcherQueue on the interactive desktop. This file
 > remains as the record of the failed experiments, not the current implementation instructions.
 
-## Current handoff — 2026-11-02
+## Current handoff — 2026-11-03
 
-**Latest animation refinement — measured candidate, visual review UNVERIFIED:**
+**Opening-latency refinement — UNVERIFIED visual behavior:** hardware-device
+creation was the dominant measured cost before reveal. The final candidate uses
+Windows' WARP device for uploading already-rasterized controls/noise, with hardware
+creation as a fallback. Windows Composition still owns the acrylic effect. All
+rendering resources and the worker are released on hide; no cache or prewarming
+worker remains. A device-retention experiment was rejected after per-thread cycle
+sampling found extra hidden work in the NVIDIA driver. See IMPLEMENTATION.md
+section 9.4 and the
+[opening-latency investigation](research/2026-11-03-flyout-opening-latency.md).
+MEASURED 2026-11-03, four instrumented openings: request-to-uncloak was approximately
+66 ms initially and 33–38 ms on repeat opens, compared with 115–192 ms on the previous
+hardware path. These are API milestones, not screen-presentation measurements.
+MEASURED 2026-11-03, clean candidate, 120.155 seconds hidden with media protection
+settled: accounted CPU increment 0 ms, process cycles 17,578,441, no render worker,
+presentations unchanged at 48. This was comparable to the preceding hardware
+build's settled 120.173-second sample of 19,183,152 cycles / 0 ms; nonzero cycles
+mean this is not literal zero CPU use. The clean build passed 2,368 self-test checks.
+Visual acceptance, GPU power behavior, and hardware lifecycle coverage remain pending.
+
+**Preceding cadence refinement — measured candidate, visual review UNVERIFIED:**
 after the user noted that the flyout looked lower-frame-rate than Windows, a fresh
 in-memory timing comparison found substantial per-move control repaint work. The
 current candidate uses `DCompositionWaitForCompositorClock` to drive WAM interpolation
@@ -16,7 +35,7 @@ only during a transition. The UI still moves the whole HWND; `FrameApplied` perm
 one outstanding move, and retained `controlsTexture` pixels are copied into each
 flip buffer for presentation. Completion refreshes the controls once and does not
 reposition the window again. There is no compositor-clock subscription at rest,
-and hiding joins the worker and releases its resources.
+and hiding joins the worker and releases the entire composition scene/device.
 
 MEASURED 2026-11-02, three-cycle comparison: baseline mean applied-position intervals
 were approximately 22–31 milliseconds; candidate means were approximately

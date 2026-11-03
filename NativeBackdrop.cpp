@@ -314,6 +314,19 @@ struct Scene {
         Close(compositor.p);
         if (context) { context->ClearState(); context->Flush(); }
     }
+    HRESULT CreateUploadDevice() {
+        // Pixels are rasterized by GDI. Windows Composition renders the acrylic;
+        // this device only uploads/copies control and noise textures while visible.
+        HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS,
+            nullptr, 0, D3D11_SDK_VERSION, device.out(), nullptr, context.out());
+        if (SUCCEEDED(hr)) return hr;
+        context.reset(); device.reset();
+        // Preserve the previous hardware path if WARP device creation is unavailable.
+        return D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
+            device.out(), nullptr, context.out());
+    }
     HRESULT Slide(bool hiding) {
         if (!motion) motion.p = new WindowMotion();
         HRESULT hr = motion ? motion->Begin(hiding) : E_OUTOFMEMORY;
@@ -527,8 +540,7 @@ struct Scene {
         NATIVE_TRY(L"desktop interop", As(compositor.p, desktop));
         NATIVE_TRY(L"desktop target", desktop->CreateDesktopWindowTarget(g.panel, TRUE, targetObject.out()));
         NATIVE_TRY(L"composition target", As(targetObject.p, target));
-        NATIVE_TRY(L"D3D device", D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
-                   D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, device.out(), nullptr, context.out()));
+        NATIVE_TRY(L"D3D device", CreateUploadDevice());
         Ref<IDXGIDevice> dxgi;
         Ref<IDXGIAdapter> adapter;
         NATIVE_TRY(L"DXGI device", device->QueryInterface(__uuidof(IDXGIDevice), (void**)dxgi.out()));

@@ -86,6 +86,9 @@ $liveTerms = @(
     'FrameApplied',                 # UI acknowledgement prevents movement-message backlog
     'pendingPosition',              # one outstanding native movement request
     'controlsTexture',              # retain controls while moving; initialize each flip buffer
+    'CreateUploadDevice',           # WARP texture uploads avoid hardware-device startup latency
+    'D3D_DRIVER_TYPE_WARP',
+    'D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS',
     'UI_ANIMATION_IDLE_BEHAVIOR_DISABLE',
     'kAnimationUpdateMessage',       # single UI-thread position authority for native slide
     'panelOpening',                  # guard all preparation, release before the visible entrance ends
@@ -207,6 +210,7 @@ foreach ($t in $liveTerms) {
 # Literal assertions that were true once and are now false. Add one here the moment a
 # mechanism is replaced.
 $staleClaims = @(
+    'The flyout retains a D3D device between openings', # rejected cache increased hidden driver cycles
     'Native animation always uses a timer-driven update loop', # compositor clock is preferred
     'Every commit publishes a release', # releases are explicitly dispatched drafts
     'dims first when nothing is dimmed, then switches the displays off immediately',

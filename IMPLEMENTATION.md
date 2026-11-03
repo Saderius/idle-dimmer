@@ -2,7 +2,7 @@
 
 *Created 2026-10-14*
 
-Technical documentation of the current Win32 implementation in `IdleDimmer.cpp` and `NativeBackdrop.cpp` (MEASURED 2026-11-02, clean compositor-clock candidate: 288,256 bytes; animation visual review pending). Companion to [README.md](README.md), which covers usage. Historical observations and remaining verification limits are marked.
+Technical documentation of the current Win32 implementation in `IdleDimmer.cpp` and `NativeBackdrop.cpp` (MEASURED 2026-11-03, clean WARP upload-device candidate: 288,768 bytes; visual review pending). Companion to [README.md](README.md), which covers usage. Historical observations and remaining verification limits are marked.
 
 ## 1. Purpose and design goals
 
@@ -21,7 +21,7 @@ Priority order for all decisions:
 | Compiler | Bundled Zig `cc` (`build-tools\zig-x86_64-windows-0.15.2`), invoked by `build.ps1` |
 | Flags | `-Os -fno-exceptions -fno-rtti -ffunction-sections -fdata-sections -Wl,--gc-sections -Wl,--subsystem,windows -s -municode` |
 | Linked | ole32, oleaut32, wbemuuid, winrt (l1-1-0, string), shell32, user32, gdi32, advapi32, wtsapi32, dwmapi, d3d11, dxgi, windowscodecs, uuid |
-| Output | `IdleDimmer.exe`, ~282 KB (MEASURED 2026-11-02, clean compositor-clock candidate: 288,256 bytes; temporary cadence counters removed) |
+| Output | `IdleDimmer.exe`, ~282 KB (MEASURED 2026-11-03, clean WARP upload-device candidate: 288,768 bytes; temporary timing counters removed) |
 | Runtime deps | OS DLLs only (no VC runtime, no .NET, no Electron). `dxva2.dll` is resolved by name at first use, never linked |
 
 The build also runs `tools\build-panel-icons.ps1` before compiling: it rasterizes
@@ -431,6 +431,28 @@ before/after reports. These implementation checks do not establish the user's di
 or certify visual smoothness.
 Measured before/after timings and their limits are in the
 [cadence investigation](docs/research/2026-11-02-animation-cadence-fix.md).
+Opening latency was measured separately: MEASURED 2026-11-03, four `--menu` cycles
+on the previous build, `D3D11CreateDevice` took 82–133 ms and open-request receipt
+to uncloaking took 115–192 ms. See the [opening-latency investigation](docs/research/2026-11-03-flyout-opening-latency.md)
+for the baseline stage timings and measurement limits.
+
+**UNVERIFIED 2026-11-03 upload-device refinement, awaiting visual audit:**
+`CreateUploadDevice` now first requests `D3D_DRIVER_TYPE_WARP` with
+`D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS` alongside BGRA
+support. This device uploads/copies already-rasterized GDI controls and the noise
+texture; the app runs no shaders. Windows Composition still owns host-backdrop
+sampling, the acrylic effect graph and final composition. A WARP creation failure
+falls back to the previous hardware-device creation path. Later native-scene
+failure still uses the existing compatibility renderer.
+
+Every hide still tears down the entire scene, releases the D3D device, drains the
+dispatcher queue and joins the render worker. No GPU-device cache, prewarming
+worker or hidden render loop remains. First-frame readiness, cloak/reveal, and
+animation remain unchanged. An earlier device-retention candidate reduced opening
+latency but increased hidden driver cycles, so it was rejected rather than treating
+a coarse CPU counter as proof of zero work. See the
+[rejected cache audit](docs/research/2026-11-03-flyout-device-cache.md) and
+[opening-latency investigation](docs/research/2026-11-03-flyout-opening-latency.md).
 The flyout is placed directly behind the target monitor's taskbar
 (`Shell_TrayWnd` or `Shell_SecondaryTrayWnd` via `TaskbarForMonitor`) within the topmost band rather
 than unconditionally on top of `HWND_TOPMOST`. A missing matching taskbar falls back to
@@ -1149,6 +1171,26 @@ Error and pause states append their own text at the point of failure — for exa
 - The only registry writes are its own Run key value; the only brightness writes are WMI sets on its own panels and DDC/CI `SetMonitorBrightness` calls to the monitors it restores.
 
 ## 15. Measured footprint (conditions recorded per sample)
+
+**MEASURED 2026-11-03, clean WARP upload-device refinement:** executable 288,768
+bytes; self-test PASS with 2,368 checks; icon/docs gates PASS. Device-creation time
+was approximately 14 ms initially and 2–3 ms on later measured openings; request
+to uncloak was approximately 66 ms initially and 33–38 ms subsequently. These are
+API milestones, not screen-presentation measurements; visual review is UNVERIFIED.
+
+**MEASURED 2026-11-03, panel hidden, media protection already settled, app enabled,
+threshold one minute, 120.155-second sample:** process CPU-time increment **0 ms**,
+with **17,578,441 process cycles**, so not literal zero CPU use. Presentations stayed
+at **48**, completed animations at **4**, and the render worker was absent at both
+ends. End working set **27,377,664 bytes**, private memory **4,341,760 bytes**,
+**8 threads**. The preceding hardware build under the same settled application
+state used **19,183,152 cycles / 0 ms** over **120.173 seconds**; this single pair
+shows no observed idle-work increase, not a proven reduction. An initial WARP
+post-launch sample included state-transition work (**35,112,125 cycles / 15.625 ms**
+over **120.181 seconds**) and is retained in the linked evidence.
+SHA256: `31FEC9E2B1A54DEADB31F7C0C4BF5440C484156EBD31EB6625DCFE272339930F`.
+See the [opening refinement and measurement artifact](docs/research/2026-11-03-flyout-opening-latency.md).
+These samples do not establish GPU energy consumption or behavior on other hardware.
 
 **MEASURED 2026-11-02, clean compositor-clock animation candidate:** executable
 288,256 bytes; build/doc/icon gates passed; full self-test passed with 2,368 checks.
