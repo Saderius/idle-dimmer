@@ -8,7 +8,10 @@
 
 ## Current handoff — 2026-11-03
 
-**Opening-latency refinement — UNVERIFIED visual behavior:** hardware-device
+**Opening-latency refinement — USER-CONFIRMED 2026-11-03 (`02d298c`):** the user
+described the running opening/animation as "butter smooth". This accepts perceived
+responsiveness and smoothness on the reviewed desktop; exact Windows parity and
+displayed frame rate were not measured. Hardware-device
 creation was the dominant measured cost before reveal. The final candidate uses
 Windows' WARP device for uploading already-rasterized controls/noise, with hardware
 creation as a fallback. Windows Composition still owns the acrylic effect. All
@@ -25,9 +28,9 @@ settled: accounted CPU increment 0 ms, process cycles 17,578,441, no render work
 presentations unchanged at 48. This was comparable to the preceding hardware
 build's settled 120.173-second sample of 19,183,152 cycles / 0 ms; nonzero cycles
 mean this is not literal zero CPU use. The clean build passed 2,368 self-test checks.
-Visual acceptance, GPU power behavior, and hardware lifecycle coverage remain pending.
+GPU power behavior and hardware lifecycle coverage remain pending.
 
-**Preceding cadence refinement — measured candidate, visual review UNVERIFIED:**
+**Preceding cadence refinement — accepted as part of the final build above:**
 after the user noted that the flyout looked lower-frame-rate than Windows, a fresh
 in-memory timing comparison found substantial per-move control repaint work. The
 current candidate uses `DCompositionWaitForCompositorClock` to drive WAM interpolation
@@ -44,7 +47,8 @@ timings, not measured displayed FPS. Temporary counters were removed, then the c
 candidate was rebuilt, passed all 2,368 self-test checks, and was launched for user
 review. Clean artifact: 288,256 bytes; SHA-256
 `9D6E1EC60A30EE52B9356DC66E58C69DFA35AE76F3E511C5FD0BE852662F9EF7`.
-No visual confirmation of this new cadence revision has been received.
+The 2026-11-03 "butter smooth" verdict applies to the final combined build,
+not an independent review of this older standalone artifact.
 
 The assistant initially stopped after explaining the diagnosis. The user challenged
 that lack of execution, after which the agent measured, implemented, compared,
@@ -127,7 +131,8 @@ MEASURED 2026-11-02, reviewed revision: build/icon/documentation gates PASS; sel
 2,128 checks; executable 289,280 bytes. Those gates establish build health, not visual fidelity.
 That instrumented revision included session-tagged requested/applied positions; the later cleanup
 above removed the logger without altering that baseline's native update path. The later cadence
-candidate is a separate change, with its own measurement and pending visual review.
+candidate is a separate change, measured independently and later accepted as part
+of the 2026-11-03 combined build described at the top of this handoff.
 
 **Visual status of the earlier baseline:** overall improvement accepted in the live review above. Exact motion matching,
 all monitor/auto-hide taskbar configurations, and separate frame-by-frame confirmation of each

@@ -2,7 +2,7 @@
 
 *Created 2026-10-14*
 
-Technical documentation of the current Win32 implementation in `IdleDimmer.cpp` and `NativeBackdrop.cpp` (MEASURED 2026-11-03, clean WARP upload-device candidate: 288,768 bytes; visual review pending). Companion to [README.md](README.md), which covers usage. Historical observations and remaining verification limits are marked.
+Technical documentation of the current Win32 implementation in `IdleDimmer.cpp` and `NativeBackdrop.cpp` (MEASURED 2026-11-03, clean WARP upload-device build: 288,768 bytes; opening/animation USER-CONFIRMED 2026-11-03 as "butter smooth"). Companion to [README.md](README.md), which covers usage. Historical observations and remaining verification limits are marked.
 
 ## 1. Purpose and design goals
 
@@ -401,7 +401,8 @@ The panel is positioned below its anchor while still cloaked. Windows Animation 
 with `CreateAccelerateDecelerateTransition`; the prepared window is revealed immediately before
 its storyboard is scheduled.
 
-**UNVERIFIED 2026-11-02 cadence candidate, awaiting live user review:** the render worker dynamically
+**Cadence refinement, USER-CONFIRMED 2026-11-03 in the final WARP build (`02d298c`):**
+the user described the live opening/animation as "butter smooth". The render worker dynamically
 loads `DCompositionWaitForCompositorClock` from the system `dcomp.dll`. While a storyboard is active,
 that clock drives explicit manager updates. At rest, the worker returns to its indefinite event/message
 wait; it does not keep subscribing to compositor ticks. A bounded clock failure or occluded desktop
@@ -436,7 +437,10 @@ on the previous build, `D3D11CreateDevice` took 82–133 ms and open-request rec
 to uncloaking took 115–192 ms. See the [opening-latency investigation](docs/research/2026-11-03-flyout-opening-latency.md)
 for the baseline stage timings and measurement limits.
 
-**UNVERIFIED 2026-11-03 upload-device refinement, awaiting visual audit:**
+**USER-CONFIRMED 2026-11-03 upload-device refinement (`02d298c`):** the user described
+the running opening/animation as "butter smooth". This confirms the experienced
+responsiveness and smoothness on the reviewed desktop, not exact Windows parity,
+displayed FPS, GPU power draw or behavior on other hardware.
 `CreateUploadDevice` now first requests `D3D_DRIVER_TYPE_WARP` with
 `D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS` alongside BGRA
 support. This device uploads/copies already-rasterized GDI controls and the noise
@@ -471,7 +475,8 @@ older pairing state. This prevents paired notifications from starting overlappin
 
 > **Earlier whole-window baseline, USER-REVIEWED 2026-11-02.** That revision received
 > "generally great!" feedback before the compositor-clock cadence refinement. The feedback
-> does not approve the latest cadence candidate, whose visual review remains pending.
+> did not approve the later cadence candidate. The separate 2026-11-03 "butter smooth"
+> feedback approves the final combined cadence/upload-device build.
 > Exact native parity, every taskbar configuration, and frame-by-frame elimination of each earlier
 > artifact remain **UNVERIFIED**; no new matched recordings were measured after this revision.
 
@@ -1176,7 +1181,8 @@ Error and pause states append their own text at the point of failure — for exa
 bytes; self-test PASS with 2,368 checks; icon/docs gates PASS. Device-creation time
 was approximately 14 ms initially and 2–3 ms on later measured openings; request
 to uncloak was approximately 66 ms initially and 33–38 ms subsequently. These are
-API milestones, not screen-presentation measurements; visual review is UNVERIFIED.
+API milestones, not screen-presentation measurements. USER-CONFIRMED 2026-11-03:
+the live opening/animation was described as "butter smooth".
 
 **MEASURED 2026-11-03, panel hidden, media protection already settled, app enabled,
 threshold one minute, 120.155-second sample:** process CPU-time increment **0 ms**,
@@ -1197,7 +1203,9 @@ These samples do not establish GPU energy consumption or behavior on other hardw
 Temporary profiling counters are absent from this build. The profiled candidate's
 UI-applied movement intervals were approximately 16.5–16.8 milliseconds, with no
 control repaints during motion. Those timings describe applied HWND positions,
-not independently measured displayed frames. Visual smoothness remains UNVERIFIED.
+not independently measured displayed frames. The final combined refinement was
+USER-CONFIRMED 2026-11-03 as "butter smooth"; that later verdict does not independently
+validate the older standalone artifact's visual behavior.
 
 **MEASURED 2026-11-02, current running v1.0.1, PID 43812, 120.081-second sample:**
 the process CPU-time counter increased by **0 ms**, corresponding to **0.00% reported

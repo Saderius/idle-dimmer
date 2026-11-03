@@ -3,7 +3,9 @@
 The baseline below describes commit `7bcdf97`. A subsequent
 [device-cache experiment](2026-11-03-flyout-device-cache.md) was rejected because of
 increased hidden driver activity. The final WARP upload-device refinement is
-documented after the baseline, with visual acceptance **UNVERIFIED**.
+documented after the baseline. **USER-CONFIRMED 2026-11-03 (`02d298c`):** the user
+described the running opening/animation as "butter smooth". This confirms perceived
+responsiveness/smoothness on the reviewed desktop, not exact shell parity or FPS.
 
 ## Baseline
 
@@ -102,8 +104,9 @@ failure with partial resources; real hardware/device-loss failures remain untest
 All temporary timing/fault hooks were removed for the final build. MEASURED
 2026-11-03: clean executable 288,768 bytes; self-test PASS, 2368 checks; SHA256
 `31FEC9E2B1A54DEADB31F7C0C4BF5440C484156EBD31EB6625DCFE272339930F`.
-Visual acceptance, high-refresh animation
-regression review, Surface behavior, GPU power draw and real graphics-device loss
+The user subsequently confirmed the live result as "butter smooth" (2026-11-03,
+commit `02d298c`). Independent frame-rate/high-refresh measurements, Surface
+behavior, GPU power draw and real graphics-device loss
 remain **UNVERIFIED**. No monitor power/brightness operations were invoked as tests.
 
 ## Hidden CPU comparison

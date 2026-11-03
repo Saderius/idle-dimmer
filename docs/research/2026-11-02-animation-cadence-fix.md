@@ -1,7 +1,9 @@
 # Whole-window animation cadence
 
-Status: MEASURED 2026-11-02 for application update timing; visual smoothness remains
-UNVERIFIED until the user reviews the candidate. No claim of exact Windows parity
+Status: MEASURED 2026-11-02 for application update timing. USER-CONFIRMED 2026-11-03:
+the user described the final combined cadence/WARP upload-device build (`02d298c`)
+as "butter smooth". This is acceptance of the reviewed live result, not an independent
+review of the earlier standalone cadence artifact. No claim of exact Windows parity
 or measured screen presentation rate is made.
 
 ## How this refinement was handled in the chat
@@ -162,11 +164,12 @@ audit output. Old display-power and presentation logs were not truncated or reus
 
 ## Review still required
 
-The latest user request was to document the work and process. It is not a visual
-acceptance report. The new cadence candidate therefore remains UNVERIFIED for:
+At the original handoff, the request to document the work was not visual acceptance.
+The later 2026-11-03 "butter smooth" feedback confirms the final combined live build's
+perceived smoothness. The following targeted cases still require separate evidence:
 
-- Perceived smoothness versus native Windows on the user's display, especially at
-  higher refresh rates or across monitors with different timing.
+- Matched native-Windows comparisons at higher refresh rates or across monitors
+  with different timing, beyond the accepted smoothness on the reviewed desktop.
 - Frame/shadow/content integrity, behind-taskbar appearance, and absence of a final
   visible position correction in a new matched recording.
 - A real user dismissing the flyout midway through its visible movement.
