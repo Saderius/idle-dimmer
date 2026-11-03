@@ -1683,10 +1683,9 @@ static LRESULT CALLBACK PanelProc(HWND h,UINT msg,WPARAM wp,LPARAM lp) {
         const int y=(int)(LONG_PTR)lp;
         SetWindowPos(h,nullptr,panelTarget.x,y,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
         GetWindowRect(h,&panelBounds);
-        // Submit content for the applied position now, including the final move. Do not
-        // leave a stale composition presentation waiting for the visible-only seconds tick.
-        InvalidateRect(h,nullptr,FALSE);
-        UpdateWindow(h);
+        // The existing controls do not change when their HWND moves. Re-present the retained
+        // GPU texture and acknowledge the position without repeating GDI/alpha reconstruction.
+        nativebackdrop::FrameApplied(session);
         return 0;
     }
     case nativebackdrop::kAnimationCompleteMessage:
@@ -1716,6 +1715,12 @@ static LRESULT CALLBACK PanelProc(HWND h,UINT msg,WPARAM wp,LPARAM lp) {
         HDC dc=BeginPaint(h,&ps);
         RECT rc;GetClientRect(h,&rc);
         const int dpi=panelDpi(h);
+        if(nativebackdrop::Running()&&(panelEntering||panelExiting)){
+            // The prepared texture is reused during motion; completion repaints once with
+            // current labels/hover state. Validate any move-triggered paint without rerasterizing.
+            EndPaint(h,&ps);
+            return 0;
+        }
         PanelState s;CurrentPanelState(s);
         if(nativebackdrop::Running()){
             HBITMAP overlay=PaintPanelOverlay(rc.right,rc.bottom,s,dpi);

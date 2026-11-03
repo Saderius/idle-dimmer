@@ -22,6 +22,8 @@ HRESULT AnimationError();
 const wchar_t* AnimationStage();
 unsigned CompletedAnimations();
 bool Update(const void* premultipliedBgra, int width, int height);
+// Acknowledge a UI-applied position; present cached controls without repainting them.
+void FrameApplied(unsigned session);
 void Stop();
 bool Running();
 bool WorkerAlive();

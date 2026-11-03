@@ -156,8 +156,11 @@ public:
     }
 };
 
+using WaitForCompositorClock = DWORD(WINAPI*)(UINT, const HANDLE*, DWORD);
 struct State {
     HANDLE thread = nullptr, ready = nullptr, stop = nullptr, update = nullptr, motion = nullptr;
+    HANDLE frameApplied = nullptr;
+    WaitForCompositorClock waitForClock = nullptr;
     CRITICAL_SECTION lock;
     bool lockReady = false;
     HWND panel = nullptr;
@@ -178,8 +181,8 @@ struct State {
     const wchar_t* stage = L"not started";
 } g;
 
-// Follows Microsoft's WindowsAnimation/TimerDriven sample. Animate the HWND, not its client
-// subtree: otherwise DWM exposes an empty stationary border/shadow before content arrives.
+// WAM supplies interpolation. On Windows 11 the compositor clock drives updates explicitly;
+// the legacy WAM timer is retained only if that API is unavailable. Move the whole HWND.
 struct WindowMotion final : IUIAnimationTimerEventHandler {
     LONG refs = 1;
     Ref<IUIAnimationManager> manager;
@@ -187,6 +190,7 @@ struct WindowMotion final : IUIAnimationTimerEventHandler {
     Ref<IUIAnimationTransitionLibrary> library;
     Ref<IUIAnimationVariable> position;
     bool active = false, hiding = false;
+    bool pendingPosition = false;
     unsigned session = 0;
     int finalY = 0;
     static void* operator new(size_t bytes) noexcept { return HeapAlloc(GetProcessHeap(), 0, bytes); }
@@ -204,6 +208,7 @@ struct WindowMotion final : IUIAnimationTimerEventHandler {
     }
     void Cancel() {
         active = false;
+        pendingPosition = false;
         if (timer) {
             timer->Disable();
             timer->SetTimerEventHandler(nullptr);
@@ -215,6 +220,7 @@ struct WindowMotion final : IUIAnimationTimerEventHandler {
     HRESULT Begin(bool close) {
         Cancel();
         hiding = close; session = Session();
+        ResetEvent(g.frameApplied);
         finalY = g.anchorY + (hiding ? MulDiv(kNativeSlideTravel, g.dpi, 96) : 0);
         RECT rect = {};
         if (!GetWindowRect(g.panel, &rect)) return HRESULT_FROM_WIN32(GetLastError());
@@ -227,8 +233,8 @@ struct WindowMotion final : IUIAnimationTimerEventHandler {
                                                  __uuidof(IUIAnimationTransitionLibrary), (void**)library.out());
         Ref<IUIAnimationTimerUpdateHandler> update;
         if (SUCCEEDED(hr)) hr = manager->QueryInterface(__uuidof(IUIAnimationTimerUpdateHandler), (void**)update.out());
-        if (SUCCEEDED(hr)) hr = timer->SetTimerUpdateHandler(update.p, UI_ANIMATION_IDLE_BEHAVIOR_DISABLE);
-        if (SUCCEEDED(hr)) hr = timer->SetTimerEventHandler(this);
+        if (SUCCEEDED(hr) && !g.waitForClock) hr = timer->SetTimerUpdateHandler(update.p, UI_ANIMATION_IDLE_BEHAVIOR_DISABLE);
+        if (SUCCEEDED(hr) && !g.waitForClock) hr = timer->SetTimerEventHandler(this);
         if (SUCCEEDED(hr)) hr = manager->CreateAnimationVariable((double)rect.top, position.out());
         Ref<IUIAnimationStoryboard> storyboard;
         Ref<IUIAnimationTransition> transition;
@@ -242,7 +248,7 @@ struct WindowMotion final : IUIAnimationTimerEventHandler {
         if (SUCCEEDED(hr)) hr = timer->GetTime(&now);
         if (SUCCEEDED(hr)) {
             active = true;
-            g.motionStage = L"whole-window storyboard";
+            g.motionStage = g.waitForClock ? L"compositor-clock whole-window storyboard" : L"timer whole-window storyboard";
             hr = storyboard->Schedule(now);
         }
         if (FAILED(hr)) {
@@ -252,18 +258,27 @@ struct WindowMotion final : IUIAnimationTimerEventHandler {
     }
     HRESULT STDMETHODCALLTYPE OnPreUpdate() override { return S_OK; }
     HRESULT STDMETHODCALLTYPE OnRenderingTooSlow(UINT32) override { return S_OK; }
-    HRESULT STDMETHODCALLTYPE OnPostUpdate() override {
-        if (!active || session != Session()) return S_OK;
+    void Advance() {
+        double now = 0;
+        HRESULT hr = timer->GetTime(&now);
+        if (SUCCEEDED(hr)) hr = manager->Update(now);
+        Publish(hr, FAILED(hr));
+    }
+    HRESULT STDMETHODCALLTYPE OnPostUpdate() override { Publish(); return S_OK; }
+    void Publish(HRESULT hr = S_OK, bool finish = false) {
+        if (!active || session != Session() || pendingPosition) return;
         double value = 0;
-        HRESULT hr = position->GetValue(&value);
+        if (SUCCEEDED(hr)) hr = position->GetValue(&value);
         UI_ANIMATION_MANAGER_STATUS status = UI_ANIMATION_MANAGER_BUSY;
         if (SUCCEEDED(hr)) hr = manager->GetStatus(&status);
-        const bool done = FAILED(hr) || status == UI_ANIMATION_MANAGER_IDLE;
+        const bool done = finish || FAILED(hr) || status == UI_ANIMATION_MANAGER_IDLE;
         const int y = done ? finalY : (int)(value >= 0 ? value + 0.5 : value - 0.5);
         // Post position to UI thread: single position authority tagged by session.
         // Avoid cross-thread SetWindowPos(SWP_ASYNCWINDOWPOS) racing with UI-thread positioning.
-        PostMessageW(g.panel, kAnimationUpdateMessage, ((WPARAM)session<<1)|(hiding?1:0), (LPARAM)y);
-        if (done) {
+        pendingPosition = PostMessageW(g.panel, kAnimationUpdateMessage,
+            ((WPARAM)session<<1)|(hiding?1:0), (LPARAM)y) != FALSE;
+        if (!pendingPosition) hr = HRESULT_FROM_WIN32(GetLastError());
+        if (done || FAILED(hr)) {
             active = false;
             timer->Disable();
             g.motionError = hr;
@@ -271,7 +286,6 @@ struct WindowMotion final : IUIAnimationTimerEventHandler {
             InterlockedIncrement(&g.completedAnimations);
             PostMessageW(g.panel, kAnimationCompleteMessage, hiding ? 1 : 0, (LPARAM)session);
         }
-        return S_OK;
     }
 };
 
@@ -291,6 +305,7 @@ struct Scene {
     Ref<ID3D11DeviceContext> context;
     Ref<IDXGIFactory2> factory;
     Ref<IDXGISwapChain1> controlsChain, noiseChain;
+    Ref<ID3D11Texture2D> controlsTexture;
     Ref<WindowMotion> motion;
     ~Scene() {
         if (motion) motion->Cancel();
@@ -372,6 +387,32 @@ struct Scene {
         context->UpdateSubresource(buffer.p, 0, nullptr, pixels, width * 4, 0);
         DXGI_PRESENT_PARAMETERS params = {};
         return chain->Present1(0, 0, &params);
+    }
+    HRESULT PresentControls() {
+        Ref<ID3D11Texture2D> buffer;
+        HRESULT hr = controlsChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)buffer.out());
+        if (FAILED(hr)) return hr;
+        // Flip-model buffers alternate: copy the retained texture into the current buffer,
+        // rather than presenting an uninitialized/stale alternate buffer after a move.
+        context->CopyResource(buffer.p, controlsTexture.p);
+        DXGI_PRESENT_PARAMETERS params = {};
+        return controlsChain->Present1(0, 0, &params);
+    }
+    HRESULT UpdateControls() {
+        if (!controlsTexture) {
+            D3D11_TEXTURE2D_DESC desc = {};
+            desc.Width = g.width; desc.Height = g.height;
+            desc.MipLevels = desc.ArraySize = 1;
+            desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            desc.SampleDesc.Count = 1;
+            desc.Usage = D3D11_USAGE_DEFAULT;
+            HRESULT hr = device->CreateTexture2D(&desc, nullptr, controlsTexture.out());
+            if (FAILED(hr)) return hr;
+        }
+        EnterCriticalSection(&g.lock);
+        context->UpdateSubresource(controlsTexture.p, 0, nullptr, g.pixels, g.width * 4, 0);
+        LeaveCriticalSection(&g.lock);
+        return PresentControls();
     }
     HRESULT SurfaceBrush(IDXGISwapChain1* chain, Ref<ICompositionBrush>& brush) {
         Ref<CompositorInterop> interop;
@@ -494,7 +535,7 @@ struct Scene {
         NATIVE_TRY(L"DXGI adapter", dxgi->GetAdapter(adapter.out()));
         NATIVE_TRY(L"DXGI factory", adapter->GetParent(__uuidof(IDXGIFactory2), (void**)factory.out()));
         NATIVE_TRY(L"control swapchain", Chain(g.width, g.height, controlsChain));
-        NATIVE_TRY(L"initial controls", Upload(controlsChain.p, g.pixels, g.width));
+        NATIVE_TRY(L"initial controls", UpdateControls());
         NATIVE_TRY(L"native noise", Noise());
         NATIVE_TRY(L"native material", Material());
         NATIVE_TRY(L"background visual", compositor->CreateSpriteVisual(background.out()));
@@ -544,6 +585,9 @@ DWORD WINAPI RenderThread(void*) {
     HRESULT hr = RoInitialize(RO_INIT_SINGLETHREADED);
     if (SUCCEEDED(hr)) {
         Ref<IDispatcherQueueController> queue;
+        HMODULE clockLibrary = g.animate ? LoadLibraryExW(L"dcomp.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32) : nullptr;
+        g.waitForClock = clockLibrary ? (WaitForCompositorClock)GetProcAddress(clockLibrary,
+            "DCompositionWaitForCompositorClock") : nullptr;
         HMODULE core = LoadLibraryW(L"CoreMessaging.dll");
         struct Options { DWORD size; int thread; int apartment; };
         using CreateQueue = HRESULT(WINAPI*)(Options, IDispatcherQueueController**);
@@ -561,9 +605,21 @@ DWORD WINAPI RenderThread(void*) {
             }
             SetEvent(g.ready);
             if (SUCCEEDED(hr)) {
-                HANDLE events[3] = {g.stop, g.motion, g.update};
+                HANDLE events[4] = {g.stop, g.motion, g.update, g.frameApplied};
                 for (;;) {
-                    DWORD wait = MsgWaitForMultipleObjectsEx(3, events, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+                    const bool pacedMotion = g.waitForClock && scene.motion && scene.motion->active &&
+                                             !scene.motion->pendingPosition;
+                    // Never subscribe to the compositor heartbeat at rest. Waiting for a UI
+                    // acknowledgement also stops position messages piling up behind a slow UI.
+                    DWORD wait = pacedMotion ? g.waitForClock(4, events, 250) :
+                        MsgWaitForMultipleObjectsEx(4, events, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+                    if (pacedMotion && wait == WAIT_OBJECT_0 + 4) {
+                        scene.motion->Advance();
+                    } else if (pacedMotion && (wait == WAIT_TIMEOUT || wait > WAIT_OBJECT_0 + 4)) {
+                        // An occluded/disconnected desktop can return immediately. Finish this
+                        // finite transition once, rather than spinning on an unavailable clock.
+                        scene.motion->Publish(HRESULT_FROM_WIN32(ERROR_NOT_READY), true);
+                    }
                     if (wait == WAIT_OBJECT_0) break;
                     if (wait == WAIT_FAILED) {
                         g.error = HRESULT_FROM_WIN32(GetLastError()); g.stage = L"native message wait";
@@ -574,11 +630,18 @@ DWORD WINAPI RenderThread(void*) {
                         if (request) g.motionError = scene.Slide(request == 2);
                     }
                     if (wait == WAIT_OBJECT_0 + 2) {
-                        EnterCriticalSection(&g.lock);
-                        HRESULT paint = scene.Upload(scene.controlsChain.p, g.pixels, g.width);
-                        LeaveCriticalSection(&g.lock);
+                        HRESULT paint = scene.UpdateControls();
                         if (FAILED(paint)) {
                             g.error = paint; g.stage = L"control presentation";
+                            PostMessageW(g.panel, kFailureMessage, 0, 0); break;
+                        }
+                        InterlockedIncrement(&g.frames);
+                    }
+                    if (wait == WAIT_OBJECT_0 + 3) {
+                        if (scene.motion) scene.motion->pendingPosition = false;
+                        HRESULT paint = scene.PresentControls();
+                        if (FAILED(paint)) {
+                            g.error = paint; g.stage = L"cached control presentation";
                             PostMessageW(g.panel, kFailureMessage, 0, 0); break;
                         }
                         InterlockedIncrement(&g.frames);
@@ -593,6 +656,8 @@ DWORD WINAPI RenderThread(void*) {
         } // detach and close the compositor, and release GPU resources, before draining its queue
         DrainQueue(queue.p);
         queue.reset();
+        g.waitForClock = nullptr;
+        if (clockLibrary) FreeLibrary(clockLibrary);
         if (core) FreeLibrary(core);
         RoUninitialize();
     } else { g.error = hr; SetEvent(g.ready); }
@@ -633,7 +698,8 @@ bool Start(HWND panel, int width, int height, bool dark, int dpi, const void* pi
     g.stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     g.update = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     g.motion = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    if (!g.pixels || !g.ready || !g.stop || !g.update || !g.motion) { g.error = E_OUTOFMEMORY; Stop(); return false; }
+    g.frameApplied = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!g.pixels || !g.ready || !g.stop || !g.update || !g.motion || !g.frameApplied) { g.error = E_OUTOFMEMORY; Stop(); return false; }
     memcpy(g.pixels, pixels, (size_t)width * height * 4);
     // Keep the actual DWM border/shadow hidden until the complete native tree has committed.
     const BOOL yes = TRUE;
@@ -673,6 +739,9 @@ bool AnimateShow() {
     if (SetEvent(g.motion)) return true;
     g.motionError = HRESULT_FROM_WIN32(GetLastError()); return false;
 }
+void FrameApplied(unsigned session) {
+    if (Running() && session == Session()) SetEvent(g.frameApplied);
+}
 bool AnimateHide() {
     if (!Running() || !g.animate) return false;
     InterlockedExchange(&g.motionPhase, 2);
@@ -699,6 +768,7 @@ void Stop() {
     if (g.stop) { CloseHandle(g.stop); g.stop = nullptr; }
     if (g.update) { CloseHandle(g.update); g.update = nullptr; }
     if (g.motion) { CloseHandle(g.motion); g.motion = nullptr; }
+    if (g.frameApplied) { CloseHandle(g.frameApplied); g.frameApplied = nullptr; }
     if (g.pixels) { HeapFree(GetProcessHeap(), 0, g.pixels); g.pixels = nullptr; }
     if (g.styleChanged && IsWindow(g.panel)) {
         SetWindowLongPtrW(g.panel, GWL_EXSTYLE, g.originalStyle);

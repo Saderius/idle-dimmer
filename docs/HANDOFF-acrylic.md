@@ -8,6 +8,32 @@
 
 ## Current handoff — 2026-11-02
 
+**Latest animation refinement — measured candidate, visual review UNVERIFIED:**
+after the user noted that the flyout looked lower-frame-rate than Windows, a fresh
+in-memory timing comparison found substantial per-move control repaint work. The
+current candidate uses `DCompositionWaitForCompositorClock` to drive WAM interpolation
+only during a transition. The UI still moves the whole HWND; `FrameApplied` permits
+one outstanding move, and retained `controlsTexture` pixels are copied into each
+flip buffer for presentation. Completion refreshes the controls once and does not
+reposition the window again. There is no compositor-clock subscription at rest,
+and hiding joins the worker and releases its resources.
+
+MEASURED 2026-11-02, three-cycle comparison: baseline mean applied-position intervals
+were approximately 22–31 milliseconds; candidate means were approximately
+16.5–16.8 milliseconds, with no control repaints during motion. These are application
+timings, not measured displayed FPS. Temporary counters were removed, then the clean
+candidate was rebuilt, passed all 2,368 self-test checks, and was launched for user
+review. Clean artifact: 288,256 bytes; SHA-256
+`9D6E1EC60A30EE52B9356DC66E58C69DFA35AE76F3E511C5FD0BE852662F9EF7`.
+No visual confirmation of this new cadence revision has been received.
+
+The assistant initially stopped after explaining the diagnosis. The user challenged
+that lack of execution, after which the agent measured, implemented, compared,
+removed instrumentation, rebuilt, and deployed the candidate. No additional Gemini
+or other agent was used for this phase. The complete chronology, comparison protocol,
+files changed, and outstanding review are in the
+[animation refinement report](research/2026-11-02-animation-cadence-fix.md).
+
 **USER-CONFIRMED display-off behavior, 2026-11-02:** after returning and testing the running
 candidate, the user reported "behavior generally seems correct now" and requested a commit.
 The trace records two manual off/wake sessions with one request per transition. This is a
@@ -21,7 +47,8 @@ are preserved in `docs/research/2026-11-02-display-off-loop.md`.
 **UNVERIFIED glyph-weight adjustment, 2026-11-02:** reduced the slider clock and six tile glyphs' SVG stroke
 setting from `1.5` to `1.0`, including both Dimming variants, after screenshot coverage
 measurements showed heavier app strokes. Size, position, antialiasing, and runtime lifecycle
-are preserved; footer and tray artwork are unchanged. The clock was added in a follow-up after
+are preserved; the footer moon, exit, and tray artwork were unchanged, while the footer monitor
+shares the updated Display mask. The clock was added in a follow-up after
 the user pointed out that the tile-only adjustment left it heavier. Awaiting live user comparison;
 see `docs/research/2026-11-02-glyph-stroke-weight.md` for the measured baseline.
 
@@ -56,7 +83,7 @@ Treat this revision as the positively reviewed baseline. The feedback covers the
 it does not prove exact shell parity or individually verify every former artifact. No additional
 animation changes were made for this documentation update.
 
-**Latest follow-up:** following user instruction and critique reconciliation, implementation of
+**Earlier accepted baseline, before the cadence refinement:** following user instruction and critique reconciliation, implementation of
 the flyout entrance fixes completed. Three key structural defects identified in the trace and
 frame comparisons have been addressed in code. Gemini 3.8 Flash High produced the initial patch
 through the actual `agy` CLI; parent review corrected preparation-guard lifetime, removed the
@@ -73,14 +100,17 @@ remaining completion-position write, and added direction validation and immediat
    worker thread in `NativeBackdrop.cpp`; position updates are now posted via `kAnimationUpdateMessage`
    with session/direction tokens. Obsolete updates are discarded; the final update uses the same
    handler as other positions, and completion performs no separate snap. Every applied update
-   submits fresh control content rather than waiting for the visible-only seconds tick.
+   was coupled to a fresh control repaint rather than waiting for the visible-only seconds tick.
+   That repaint coupling is the costly step replaced by cached presentation in the current
+   cadence candidate described above.
 
 MEASURED 2026-11-02, reviewed revision: build/icon/documentation gates PASS; self-test PASS with
 2,128 checks; executable 289,280 bytes. Those gates establish build health, not visual fidelity.
 That instrumented revision included session-tagged requested/applied positions; the later cleanup
-above removes the logger without altering the native update path.
+above removed the logger without altering that baseline's native update path. The later cadence
+candidate is a separate change, with its own measurement and pending visual review.
 
-**Visual status:** overall improvement accepted in the live review above. Exact motion matching,
+**Visual status of the earlier baseline:** overall improvement accepted in the live review above. Exact motion matching,
 all monitor/auto-hide taskbar configurations, and separate frame-by-frame confirmation of each
 former artifact remain **UNVERIFIED**. Do not replace the reviewed mechanism based only on a
 synthetic test or an unmeasured theory.

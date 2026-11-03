@@ -2,7 +2,7 @@
 
 *Created 2026-10-14*
 
-Technical documentation of the current Win32 implementation in `IdleDimmer.cpp` and `NativeBackdrop.cpp` (MEASURED 2026-11-02, slider-wheel build: 286,720 bytes; general manual off/wake user-confirmed in the preceding build, wheel interaction UNVERIFIED). Companion to [README.md](README.md), which covers usage. Historical observations and remaining verification limits are marked.
+Technical documentation of the current Win32 implementation in `IdleDimmer.cpp` and `NativeBackdrop.cpp` (MEASURED 2026-11-02, clean compositor-clock candidate: 288,256 bytes; animation visual review pending). Companion to [README.md](README.md), which covers usage. Historical observations and remaining verification limits are marked.
 
 ## 1. Purpose and design goals
 
@@ -21,7 +21,7 @@ Priority order for all decisions:
 | Compiler | Bundled Zig `cc` (`build-tools\zig-x86_64-windows-0.15.2`), invoked by `build.ps1` |
 | Flags | `-Os -fno-exceptions -fno-rtti -ffunction-sections -fdata-sections -Wl,--gc-sections -Wl,--subsystem,windows -s -municode` |
 | Linked | ole32, oleaut32, wbemuuid, winrt (l1-1-0, string), shell32, user32, gdi32, advapi32, wtsapi32, dwmapi, d3d11, dxgi, windowscodecs, uuid |
-| Output | `IdleDimmer.exe`, ~280 KB (MEASURED 2026-11-02, slider-wheel build: 286,720 bytes; temporary power logging removed) |
+| Output | `IdleDimmer.exe`, ~282 KB (MEASURED 2026-11-02, clean compositor-clock candidate: 288,256 bytes; temporary cadence counters removed) |
 | Runtime deps | OS DLLs only (no VC runtime, no .NET, no Electron). `dxva2.dll` is resolved by name at first use, never linked |
 
 The build also runs `tools\build-panel-icons.ps1` before compiling: it rasterizes
@@ -397,17 +397,40 @@ The material and controls remain fully opaque at their resting client coordinate
 motion; no transparent empty host is deliberately shown first.
 
 The panel is positioned below its anchor while still cloaked. Windows Animation Manager
-(`IUIAnimationManager`, `IUIAnimationTimer`) schedules the complete HWND's upward movement, with
-`CreateAccelerateDecelerateTransition`; the prepared window is revealed immediately before its
-storyboard is scheduled. This follows Microsoft's [timer-driven sample](https://github.com/microsoft/Windows-classic-samples/tree/main/Samples/Win7Samples/multimedia/WindowsAnimation/TimerDriven).
-Instead of cross-thread `SWP_ASYNCWINDOWPOS` moves that race with the message loop, the WAM worker
-posts `kAnimationUpdateMessage` tagged with the native session and direction to the UI thread.
-Hidden, superseded-session, and superseded-direction updates are discarded. One UI handler applies
-all ordinary native animation positions and submits a control repaint immediately, including the
-final position. The following `kAnimationCompleteMessage` only settles entrance state or hides the
-exiting window; it no longer writes a second final position. Storyboard startup failure submits
-the resting coordinate through the same message path before completion. This removes known
-position-ordering hazards without claiming the measured late displacement's cause is established.
+(`IUIAnimationManager`, `IUIAnimationTimer`) supplies the complete HWND's position interpolation
+with `CreateAccelerateDecelerateTransition`; the prepared window is revealed immediately before
+its storyboard is scheduled.
+
+**UNVERIFIED 2026-11-02 cadence candidate, awaiting live user review:** the render worker dynamically
+loads `DCompositionWaitForCompositorClock` from the system `dcomp.dll`. While a storyboard is active,
+that clock drives explicit manager updates. At rest, the worker returns to its indefinite event/message
+wait; it does not keep subscribing to compositor ticks. A bounded clock failure or occluded desktop
+finishes the finite transition once. On systems without the API, Microsoft's prior
+[timer-driven sample](https://github.com/microsoft/Windows-classic-samples/tree/main/Samples/Win7Samples/multimedia/WindowsAnimation/TimerDriven)
+remains the compatibility mechanism. The [compositor clock reference](https://learn.microsoft.com/en-us/windows/win32/directcomp/compositor-clock/compositor-clock)
+and shipped [Zed vsync source](https://github.com/zed-industries/zed/blob/main/crates/gpui_windows/src/vsync.rs)
+were read, including the need to avoid spinning when display occlusion causes waits to return early.
+No display refresh-rate mode or boost setting is changed.
+
+The worker posts `kAnimationUpdateMessage` tagged with native session and direction to the UI.
+Hidden, superseded-session, and superseded-direction updates are discarded. One UI handler moves
+the whole HWND, then `FrameApplied` acknowledges the position through an event. `pendingPosition`
+allows only one unapplied movement request, so UI delays do not build a position-message backlog.
+`controlsTexture` retains the rendered controls on the GPU. The worker copies that texture into
+the current flip buffer before presenting after a move: alternate buffers cannot expose uninitialized
+content. Moving the HWND no longer reruns `PaintPanelOverlay`; move-triggered paints are validated,
+and entrance completion repaints once with current values. Ordinary hover, slider, and visible-state
+changes still regenerate controls outside motion. The previous forced paint per move reconstructed
+alpha and uploaded the full control texture on every step, adding avoidable work.
+
+The following `kAnimationCompleteMessage` only settles entrance state or hides the exiting window;
+it does not write a second final position. Storyboard startup failure submits the resting coordinate
+through the same message path before completion. This investigation used temporary in-memory
+cadence counters rather than per-frame file I/O. The counters were removed after collecting the
+before/after reports. These implementation checks do not establish the user's displayed frame rate
+or certify visual smoothness.
+Measured before/after timings and their limits are in the
+[cadence investigation](docs/research/2026-11-02-animation-cadence-fix.md).
 The flyout is placed directly behind the target monitor's taskbar
 (`Shell_TrayWnd` or `Shell_SecondaryTrayWnd` via `TaskbarForMonitor`) within the topmost band rather
 than unconditionally on top of `HWND_TOPMOST`. A missing matching taskbar falls back to
@@ -424,7 +447,9 @@ dismissible and controls do not stay locked. Accepted tray
 gestures advance pairing state before triggering transitions, then retain it after a close clears
 older pairing state. This prevents paired notifications from starting overlapping preparation.
 
-> **USER-REVIEWED 2026-11-02.** The running revision received "generally great!" feedback.
+> **Earlier whole-window baseline, USER-REVIEWED 2026-11-02.** That revision received
+> "generally great!" feedback before the compositor-clock cadence refinement. The feedback
+> does not approve the latest cadence candidate, whose visual review remains pending.
 > Exact native parity, every taskbar configuration, and frame-by-frame elimination of each earlier
 > artifact remain **UNVERIFIED**; no new matched recordings were measured after this revision.
 
@@ -436,11 +461,12 @@ from the actual HWND position. `kAnimationCompleteMessage` carries the session t
 messages cannot hide a later session. Control hits wait for the entrance to settle, while tray and
 click-away dismissal remain available. `SPI_GETCLIENTAREAANIMATION` disables motion when requested.
 
-`UI_ANIMATION_IDLE_BEHAVIOR_DISABLE` stops the native timer when no storyboard is active. The
-final callback also disables it, and forced hide unregisters its handlers, abandons/shuts down the
-manager, and releases it before joining the renderer. No Windows Animation timer, panel timer,
-or native worker is retained while hidden. This path intentionally performs finite position
-updates through a native animation service; it no longer claims to animate only GPU properties.
+`UI_ANIMATION_IDLE_BEHAVIOR_DISABLE` stops the compatibility native timer when no storyboard is
+active. On the compositor-clock path, automatic timer handlers are not attached. Forced hide
+signals the interruptible clock/event wait, abandons/shuts down the manager, and joins the
+renderer. No Windows Animation timer, panel timer, compositor-clock subscription, retained
+GPU texture, or native worker is retained while hidden. This path performs finite whole-window
+position updates; it does not claim to animate only GPU properties.
 `HidePanel` stays immediate for shutdown, Explorer restart, and dim/display-off actions.
 
 The former fade-only path and then the client-subtree slide were rejected by the user. They are
@@ -1122,7 +1148,35 @@ Error and pause states append their own text at the point of failure — for exa
   historical evidence, not appended by the current build (section 9.1).
 - The only registry writes are its own Run key value; the only brightness writes are WMI sets on its own panels and DDC/CI `SetMonitorBrightness` calls to the monitors it restores.
 
-## 15. Measured footprint (this machine, Surface Book 3)
+## 15. Measured footprint (conditions recorded per sample)
+
+**MEASURED 2026-11-02, clean compositor-clock animation candidate:** executable
+288,256 bytes; build/doc/icon gates passed; full self-test passed with 2,368 checks.
+Temporary profiling counters are absent from this build. The profiled candidate's
+UI-applied movement intervals were approximately 16.5–16.8 milliseconds, with no
+control repaints during motion. Those timings describe applied HWND positions,
+not independently measured displayed frames. Visual smoothness remains UNVERIFIED.
+
+**MEASURED 2026-11-02, current running v1.0.1, PID 43812, 120.081-second sample:**
+the process CPU-time counter increased by **0 ms**, corresponding to **0.00% reported
+process CPU** at the available accounting resolution. The finer process-cycle counter
+increased by **15,953,904 cycles**: actual work occurred, so this is not literal zero
+CPU use. Cycles were not converted to elapsed CPU time because processor frequency
+and accounting behavior were not measured.
+
+Conditions: app enabled, threshold one minute, paused for media playback, panel hidden,
+not dimmed, no display-off session. The runtime report's idle-check count advanced from
+96 to 99. Native presentation count stayed at 20, completed native animations stayed at
+2, and the native UI worker was absent at both ends. The machine reported 12 logical
+processors. The executable SHA-256 was
+`DA708A86166F05AFA7EA38C83D353DE08D266D60BFFFE232E844CF2F4CC35D98`.
+
+Measurement used read-only process counters on the existing instance, with no restart,
+settings change, synthetic input, or induced dim/off transition. Status IPC calls were
+outside the timed interval. This establishes a near-zero-CPU sampled interval with
+media protection active; it is not a universal zero-CPU or energy guarantee. Raw
+counters and endpoint reports are retained locally under the ignored
+`build-tools/cpu-sample-2026-11-02/` directory. Earlier build samples below are historical.
 
 **MEASURED 2026-11-02 — cleanup build:** build/icon/documentation gates PASS; self-test PASS with
 2,128 checks; executable 284,160 bytes. All application translation units also compile with

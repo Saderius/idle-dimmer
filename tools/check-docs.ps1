@@ -82,6 +82,10 @@ $liveTerms = @(
     'D3D11_QUERY_EVENT',
     'DWMWA_CLOAK',                   # host border/shadow remain hidden during preparation
     'IUIAnimationManager',           # move the entire HWND, including the DWM frame
+    'DCompositionWaitForCompositorClock', # compositor heartbeat only during finite transitions
+    'FrameApplied',                 # UI acknowledgement prevents movement-message backlog
+    'pendingPosition',              # one outstanding native movement request
+    'controlsTexture',              # retain controls while moving; initialize each flip buffer
     'UI_ANIMATION_IDLE_BEHAVIOR_DISABLE',
     'kAnimationUpdateMessage',       # single UI-thread position authority for native slide
     'panelOpening',                  # guard all preparation, release before the visible entrance ends
@@ -203,6 +207,7 @@ foreach ($t in $liveTerms) {
 # Literal assertions that were true once and are now false. Add one here the moment a
 # mechanism is replaced.
 $staleClaims = @(
+    'Native animation always uses a timer-driven update loop', # compositor clock is preferred
     'Every commit publishes a release', # releases are explicitly dispatched drafts
     'dims first when nothing is dimmed, then switches the displays off immediately',
     'only a successful DDC wake write brings',

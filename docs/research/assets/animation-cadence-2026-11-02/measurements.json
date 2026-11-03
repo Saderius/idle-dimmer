@@ -1,0 +1,184 @@
+{
+  "status": "MEASURED 2026-11-02; application counters, not displayed-frame telemetry",
+  "protocol": {
+    "cycles_per_build": 3,
+    "open_settle_ms": 700,
+    "close_settle_ms": 500,
+    "driver": "Existing --menu and --status commands; no OS input synthesis"
+  },
+  "baseline": [
+    {
+      "cycle": 1,
+      "phase": "entry",
+      "source_report": "baseline-open-1.txt",
+      "posted": 7,
+      "applied": 7,
+      "mean_applied_interval_ms": 26.148,
+      "max_applied_interval_ms": 34.819,
+      "control_paints_during_motion": 8,
+      "paint_total_ms": 107.5,
+      "paint_max_ms": 15.052
+    },
+    {
+      "cycle": 1,
+      "phase": "exit",
+      "source_report": "baseline-closed-1.txt",
+      "posted": 6,
+      "applied": 6,
+      "mean_applied_interval_ms": 28.557,
+      "max_applied_interval_ms": 32.685,
+      "control_paints_during_motion": 6,
+      "paint_total_ms": 87.466,
+      "paint_max_ms": 18.732
+    },
+    {
+      "cycle": 2,
+      "phase": "entry",
+      "source_report": "baseline-open-2.txt",
+      "posted": 7,
+      "applied": 7,
+      "mean_applied_interval_ms": 24.265,
+      "max_applied_interval_ms": 31.12,
+      "control_paints_during_motion": 8,
+      "paint_total_ms": 103.349,
+      "paint_max_ms": 15.02
+    },
+    {
+      "cycle": 2,
+      "phase": "exit",
+      "source_report": "baseline-closed-2.txt",
+      "posted": 7,
+      "applied": 7,
+      "mean_applied_interval_ms": 22.182,
+      "max_applied_interval_ms": 30.473,
+      "control_paints_during_motion": 7,
+      "paint_total_ms": 85.165,
+      "paint_max_ms": 15.098
+    },
+    {
+      "cycle": 3,
+      "phase": "entry",
+      "source_report": "baseline-open-3.txt",
+      "posted": 8,
+      "applied": 8,
+      "mean_applied_interval_ms": 21.555,
+      "max_applied_interval_ms": 28.808,
+      "control_paints_during_motion": 9,
+      "paint_total_ms": 106.595,
+      "paint_max_ms": 15.012
+    },
+    {
+      "cycle": 3,
+      "phase": "exit",
+      "source_report": "baseline-closed-3.txt",
+      "posted": 6,
+      "applied": 6,
+      "mean_applied_interval_ms": 31.134,
+      "max_applied_interval_ms": 35.823,
+      "control_paints_during_motion": 6,
+      "paint_total_ms": 73.14,
+      "paint_max_ms": 14.418
+    }
+  ],
+  "profiled_candidate": [
+    {
+      "cycle": 1,
+      "phase": "entry",
+      "source_report": "candidate-open-1.txt",
+      "posted": 12,
+      "applied": 12,
+      "mean_applied_interval_ms": 16.581,
+      "max_applied_interval_ms": 17.0,
+      "control_paints_during_motion": 0,
+      "paint_total_ms": 0.0,
+      "paint_max_ms": 0.0
+    },
+    {
+      "cycle": 1,
+      "phase": "exit",
+      "source_report": "candidate-closed-1.txt",
+      "posted": 10,
+      "applied": 10,
+      "mean_applied_interval_ms": 16.683,
+      "max_applied_interval_ms": 17.351,
+      "control_paints_during_motion": 0,
+      "paint_total_ms": 0.0,
+      "paint_max_ms": 0.0
+    },
+    {
+      "cycle": 2,
+      "phase": "entry",
+      "source_report": "candidate-open-2.txt",
+      "posted": 12,
+      "applied": 12,
+      "mean_applied_interval_ms": 16.478,
+      "max_applied_interval_ms": 16.874,
+      "control_paints_during_motion": 0,
+      "paint_total_ms": 0.0,
+      "paint_max_ms": 0.0
+    },
+    {
+      "cycle": 2,
+      "phase": "exit",
+      "source_report": "candidate-closed-2.txt",
+      "posted": 10,
+      "applied": 10,
+      "mean_applied_interval_ms": 16.76,
+      "max_applied_interval_ms": 17.456,
+      "control_paints_during_motion": 0,
+      "paint_total_ms": 0.0,
+      "paint_max_ms": 0.0
+    },
+    {
+      "cycle": 3,
+      "phase": "entry",
+      "source_report": "candidate-open-3.txt",
+      "posted": 12,
+      "applied": 12,
+      "mean_applied_interval_ms": 16.597,
+      "max_applied_interval_ms": 16.828,
+      "control_paints_during_motion": 0,
+      "paint_total_ms": 0.0,
+      "paint_max_ms": 0.0
+    },
+    {
+      "cycle": 3,
+      "phase": "exit",
+      "source_report": "candidate-closed-3.txt",
+      "posted": 10,
+      "applied": 10,
+      "mean_applied_interval_ms": 16.677,
+      "max_applied_interval_ms": 16.806,
+      "control_paints_during_motion": 0,
+      "paint_total_ms": 0.0,
+      "paint_max_ms": 0.0
+    }
+  ],
+  "profiled_baseline_exe_sha256": "c68aa4285770527e102b6fe194ecdc7db153c870b505833d0c1ad44d2866663c",
+  "profiled_candidate_exe_sha256": "2bfab33784c3b0c2c95431bba868c06d4fd4c68b4482ddab701d4f7c38b5ce5a",
+  "clean_candidate": {
+    "exe_bytes": 288256,
+    "exe_sha256": "9d6e1ec60a30ee52b9356dc66e58c69dfa35ae76f3e511c5fd0be852662f9ef7",
+    "self_test_checks": 2368,
+    "hidden_sample": {
+      "processId": 55400,
+      "seconds": 20.0063087,
+      "cpuMilliseconds": 0.0,
+      "workingSetBytes": 29241344,
+      "privateBytes": 9932800,
+      "threads": 13
+    },
+    "hidden_before": {
+      "visible": "no",
+      "worker_alive": "no",
+      "presentations": 25,
+      "idle_checks": 1
+    },
+    "hidden_after": {
+      "visible": "no",
+      "worker_alive": "no",
+      "presentations": 25,
+      "idle_checks": 1
+    }
+  }
+}
